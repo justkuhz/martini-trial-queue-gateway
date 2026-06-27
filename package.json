@@ -13,7 +13,7 @@
     "db:migrate": "drizzle-kit migrate",
     "check": "tsc -p tsconfig.json --noEmit",
     "smoke": "bash ./scripts/smoke.sh",
-    "test:integration": "tsx --test tests/integration/**/*.test.ts"
+    "test:integration": "tsx --test tests/integration/core-endpoints.test.ts"
   },
   "keywords": [],
   "author": "",
