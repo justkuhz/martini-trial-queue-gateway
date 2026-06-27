@@ -9,7 +9,11 @@ import { executeModelWithProviders } from "../models/executeModel";
 import { getModel } from "../models/registry";
 import { finishAttempt, startAttempt } from "../services/attemptService";
 import { appendLog } from "../services/logService";
-import { getRequest, markCompleted, markInProgress } from "../services/requestService";
+import {
+  getRequest,
+  markCompletedIfNotCompleted,
+  markInProgressIfNotCompleted,
+} from "../services/requestService";
 
 const REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -17,9 +21,17 @@ const worker = new Worker<QueueJobPayload>(
   env.queueName,
   async (job) => {
     const { requestId, modelId, input } = job.data;
+    const existingRequest = await getRequest(requestId, modelId);
+    if (!existingRequest) {
+      throw new UnrecoverableError(`Missing request row: ${requestId}`);
+    }
+    if (existingRequest.status === "COMPLETED") {
+      throw new UnrecoverableError(`Request already terminal: ${requestId}`);
+    }
+
     const model = getModel(modelId);
     if (!model) {
-      await markCompleted({
+      await markCompletedIfNotCompleted({
         requestId,
         error: `Unknown model: ${modelId}`,
         errorType: "bad_request",
@@ -28,22 +40,8 @@ const worker = new Worker<QueueJobPayload>(
       });
       throw new UnrecoverableError(`Unknown model: ${modelId}`);
     }
-
-    const { gatewayRequestId, attemptNumber } = await startAttempt({
-      requestId,
-      modelId,
-    });
-
-    const existingRequest = await getRequest(requestId, modelId);
     if (existingRequest?.cancellationRequested) {
-      await finishAttempt({
-        requestId,
-        gatewayRequestId,
-        status: "failed",
-        error: "Request was cancelled by the client.",
-        errorType: "client_cancelled",
-      });
-      await markCompleted({
+      await markCompletedIfNotCompleted({
         requestId,
         error: "Request was cancelled by the client.",
         errorType: "client_cancelled",
@@ -54,7 +52,17 @@ const worker = new Worker<QueueJobPayload>(
       throw new UnrecoverableError("Request cancelled before processing.");
     }
 
-    await markInProgress(requestId);
+    // Conditional transition protects lifecycle integrity if BullMQ redelivers after crash.
+    const movedToInProgress = await markInProgressIfNotCompleted(requestId);
+    if (!movedToInProgress) {
+      throw new UnrecoverableError(`Request already completed: ${requestId}`);
+    }
+
+    const { gatewayRequestId, attemptNumber } = await startAttempt({
+      requestId,
+      modelId,
+    });
+
     await appendLog(
       requestId,
       `Worker started processing (attempt ${attemptNumber}, ${gatewayRequestId}).`,
@@ -87,7 +95,7 @@ const worker = new Worker<QueueJobPayload>(
           error: "Request was cancelled by the client.",
           errorType: "client_cancelled",
         });
-        await markCompleted({
+        await markCompletedIfNotCompleted({
           requestId,
           error: "Request was cancelled by the client.",
           errorType: "client_cancelled",
@@ -104,7 +112,7 @@ const worker = new Worker<QueueJobPayload>(
         gatewayRequestId,
         status: "succeeded",
       });
-      await markCompleted({
+      await markCompletedIfNotCompleted({
         requestId,
         output: result.output,
         internalStatus: "succeeded",
@@ -141,7 +149,8 @@ const worker = new Worker<QueueJobPayload>(
           : new Error(normalizedError.message);
       }
 
-      await markCompleted({
+      // Conditional completion keeps terminal writes idempotent across retries.
+      await markCompletedIfNotCompleted({
         requestId,
         error: normalizedError.message,
         errorType: normalizedError.errorType,
