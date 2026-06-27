@@ -3,8 +3,9 @@ import "dotenv/config";
 import { UnrecoverableError, Worker } from "bullmq";
 
 import { env } from "../config/env";
-import type { QueueJobPayload } from "../domain";
+import type { ModelRunContext, QueueJobPayload } from "../domain";
 import { toExecutionError } from "../domain";
+import { executeModelWithProviders } from "../models/executeModel";
 import { getModel } from "../models/registry";
 import { finishAttempt, startAttempt } from "../services/attemptService";
 import { appendLog } from "../services/logService";
@@ -59,11 +60,23 @@ const worker = new Worker<QueueJobPayload>(
       `Worker started processing (attempt ${attemptNumber}, ${gatewayRequestId}).`,
     );
 
+    const abortController = new AbortController();
+    const timeoutHandle = setTimeout(() => {
+      abortController.abort();
+    }, model.requestTimeoutSeconds * 1000);
+
     try {
-      const result = await model.adapter.run(input);
-      for (const logLine of result.logs) {
-        await appendLog(requestId, logLine);
-      }
+      const runContext: ModelRunContext = {
+        requestId,
+        gatewayRequestId,
+        signal: abortController.signal,
+        log: async (message: string) => {
+          await appendLog(requestId, message);
+        },
+      };
+      const result = await executeModelWithProviders(model, input, runContext);
+      clearTimeout(timeoutHandle);
+      await appendLog(requestId, "Done.");
 
       const currentRow = await getRequest(requestId, modelId);
       if (currentRow?.cancellationRequested) {
@@ -100,6 +113,7 @@ const worker = new Worker<QueueJobPayload>(
       });
       await appendLog(requestId, "Request completed successfully.");
     } catch (error) {
+      clearTimeout(timeoutHandle);
       if (error instanceof UnrecoverableError) {
         throw error;
       }

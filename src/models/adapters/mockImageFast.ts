@@ -1,21 +1,19 @@
-import type { ModelAdapter, ModelRunResult } from "./base";
+import type { ModelProviderAdapter, ModelRunResult } from "./base";
+import { sleepWithSignal } from "./utils";
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-export const mockImageFastAdapter: ModelAdapter = {
-  async run(input: Record<string, unknown>): Promise<ModelRunResult> {
+export const mockImageFastProvider: ModelProviderAdapter = {
+  providerId: "mock-image-primary",
+  async run(input, context): Promise<ModelRunResult> {
     const startedAt = Date.now();
-    await sleep(1200);
+    await context.log("Loading model weights...");
+    await sleepWithSignal(500, context.signal);
+    await context.log("Generating image...");
+    await sleepWithSignal(700, context.signal);
 
     const prompt = String(input.prompt ?? "");
     const seed = Number(input.seed ?? 42);
 
     return {
-      logs: ["Loading model weights...", "Generating image...", "Done."],
       inferenceTimeSeconds: (Date.now() - startedAt) / 1000,
       output: {
         images: [

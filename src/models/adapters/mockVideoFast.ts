@@ -1,21 +1,20 @@
-import type { ModelAdapter, ModelRunResult } from "./base";
+import type { ModelProviderAdapter, ModelRunResult } from "./base";
 import { ModelExecutionError } from "../../domain";
+import { sleepWithSignal } from "./utils";
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-export const mockVideoFastAdapter: ModelAdapter = {
-  async run(input: Record<string, unknown>): Promise<ModelRunResult> {
+export const mockVideoFastPrimaryProvider: ModelProviderAdapter = {
+  providerId: "mock-video-primary",
+  async run(input, context): Promise<ModelRunResult> {
     const startedAt = Date.now();
-    await sleep(1800);
+    await context.log("Loading video model...");
+    await sleepWithSignal(600, context.signal);
+    await context.log("Rendering frames...");
+    await sleepWithSignal(1200, context.signal);
 
     // Intentionally fail sometimes to exercise retry behavior.
     if (Math.random() < 0.25) {
       throw new ModelExecutionError(
-        "Mock video provider temporary failure.",
+        "Primary video provider temporary failure.",
         "runner_server_error",
       );
     }
@@ -24,7 +23,6 @@ export const mockVideoFastAdapter: ModelAdapter = {
     const seed = Number(input.seed ?? 42);
 
     return {
-      logs: ["Loading video model...", "Rendering frames...", "Done."],
       inferenceTimeSeconds: (Date.now() - startedAt) / 1000,
       output: {
         video: {

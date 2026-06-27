@@ -45,3 +45,41 @@ Data models:
 - `request_attempts`: one row per execution attempt; stores `gateway_request_id`, attempt number, attempt status, and error details for retry/debug visibility.
 - `error_type` and status enums are normalized in schema to keep worker transitions and API behavior consistent.
 - `expires_at` is stored on completed requests for future retention cleanup jobs.
+
+Model mocks and response behavior:
+
+- `martini/image-fast` mock provider returns image-shaped output:
+
+```json
+{
+  "images": [
+    {
+      "url": "https://example.com/fake-image.png",
+      "width": 1024,
+      "height": 1024,
+      "content_type": "image/png"
+    }
+  ],
+  "prompt": "a cinematic cat walking through New York at night",
+  "seed": 42
+}
+```
+
+- `martini/video-fast` mock providers return video-shaped output:
+
+```json
+{
+  "video": {
+    "url": "https://example.com/fake-video.mp4",
+    "content_type": "video/mp4",
+    "file_name": "fake-video.mp4"
+  },
+  "prompt": "a cinematic cat walking through New York at night",
+  "seed": 42
+}
+```
+
+- `GET /v1/queue/:model_id/requests/:request_id/response` behavior:
+  - Returns `200` with model-specific payload when request is completed successfully.
+  - Returns `409` with a clear `"Response not ready yet."` error when request is still `IN_QUEUE` or `IN_PROGRESS`.
+  - Returns `422` with `error` and `error_type` when request completed with an execution error.

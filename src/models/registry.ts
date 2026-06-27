@@ -1,6 +1,7 @@
 import type { RegisteredModel } from "../domain/model";
-import { mockImageFastAdapter } from "./adapters/mockImageFast";
-import { mockVideoFastAdapter } from "./adapters/mockVideoFast";
+import { mockImageFastProvider } from "./adapters/mockImageFast";
+import { mockVideoFastFallbackProvider } from "./adapters/mockVideoFastFallback";
+import { mockVideoFastPrimaryProvider } from "./adapters/mockVideoFast";
 
 const registry = new Map<string, RegisteredModel>([
   [
@@ -8,7 +9,7 @@ const registry = new Map<string, RegisteredModel>([
     {
       modelId: "martini/image-fast",
       requestTimeoutSeconds: 30,
-      adapter: mockImageFastAdapter,
+      providers: [mockImageFastProvider],
     },
   ],
   [
@@ -16,7 +17,7 @@ const registry = new Map<string, RegisteredModel>([
     {
       modelId: "martini/video-fast",
       requestTimeoutSeconds: 120,
-      adapter: mockVideoFastAdapter,
+      providers: [mockVideoFastPrimaryProvider, mockVideoFastFallbackProvider],
     },
   ],
 ]);

@@ -1,2 +1,6 @@
-export type { ModelAdapter, ModelRunResult } from "../../domain/model";
+export type {
+  ModelProviderAdapter,
+  ModelRunContext,
+  ModelRunResult,
+} from "../../domain/model";
 
