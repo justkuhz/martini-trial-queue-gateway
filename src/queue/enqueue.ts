@@ -1,6 +1,6 @@
 import "dotenv/config";
 
-import { Queue } from "bullmq";
+import { Job, Queue } from "bullmq";
 
 import { env } from "../config/env";
 import { REQUEST_QUEUE_JOB_NAME, type QueueJobPayload } from "../domain";
@@ -16,7 +16,7 @@ export const requestQueue = new Queue<
 >(env.queueName, {
   connection: queueConnection,
   defaultJobOptions: {
-    attempts: 2,
+    attempts: 10,
     backoff: {
       type: "exponential",
       delay: 1_000,
@@ -30,6 +30,38 @@ export async function enqueueRequest(payload: QueueJobPayload): Promise<void> {
   await requestQueue.add(REQUEST_QUEUE_JOB_NAME, payload, {
     jobId: payload.requestId,
   });
+}
+
+async function getRequestJob(
+  requestId: string,
+): Promise<Job<QueueJobPayload, void, typeof REQUEST_QUEUE_JOB_NAME> | undefined> {
+  const job = await requestQueue.getJob(requestId);
+  return job ?? undefined;
+}
+
+export async function removeQueuedRequestJob(requestId: string): Promise<boolean> {
+  const job = await getRequestJob(requestId);
+  if (!job) {
+    return false;
+  }
+
+  const state = await job.getState();
+  if (state === "waiting" || state === "delayed" || state === "prioritized") {
+    await job.remove();
+    return true;
+  }
+
+  return false;
+}
+
+export async function hasActiveRequestJob(requestId: string): Promise<boolean> {
+  const job = await getRequestJob(requestId);
+  if (!job) {
+    return false;
+  }
+
+  const state = await job.getState();
+  return state === "active";
 }
 
 export async function closeQueue(): Promise<void> {

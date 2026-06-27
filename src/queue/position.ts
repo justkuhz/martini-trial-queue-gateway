@@ -1,7 +1,17 @@
 import { requestQueue } from "./enqueue";
 
-export async function getQueuePosition(_requestId: string): Promise<number> {
-  const counts = await requestQueue.getJobCounts("waiting", "prioritized");
-  return (counts.waiting ?? 0) + (counts.prioritized ?? 0);
+export async function getQueuePosition(requestId: string): Promise<number> {
+  const queuedJobs = await requestQueue.getJobs(
+    ["prioritized", "waiting"],
+    0,
+    -1,
+    true,
+  );
+  const index = queuedJobs.findIndex((job) => job.id === requestId);
+  if (index === -1) {
+    return 0;
+  }
+
+  return index;
 }
 

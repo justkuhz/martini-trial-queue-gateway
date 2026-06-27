@@ -1,13 +1,16 @@
 import "dotenv/config";
 
-import { Worker } from "bullmq";
+import { UnrecoverableError, Worker } from "bullmq";
 
 import { env } from "../config/env";
 import type { QueueJobPayload } from "../domain";
+import { toExecutionError } from "../domain";
 import { getModel } from "../models/registry";
 import { finishAttempt, startAttempt } from "../services/attemptService";
 import { appendLog } from "../services/logService";
 import { getRequest, markCompleted, markInProgress } from "../services/requestService";
+
+const REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const worker = new Worker<QueueJobPayload>(
   env.queueName,
@@ -20,15 +23,35 @@ const worker = new Worker<QueueJobPayload>(
         error: `Unknown model: ${modelId}`,
         errorType: "bad_request",
         internalStatus: "failed",
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
       });
-      return;
+      throw new UnrecoverableError(`Unknown model: ${modelId}`);
     }
 
     const { gatewayRequestId, attemptNumber } = await startAttempt({
       requestId,
       modelId,
     });
+
+    const existingRequest = await getRequest(requestId, modelId);
+    if (existingRequest?.cancellationRequested) {
+      await finishAttempt({
+        requestId,
+        gatewayRequestId,
+        status: "failed",
+        error: "Request was cancelled by the client.",
+        errorType: "client_cancelled",
+      });
+      await markCompleted({
+        requestId,
+        error: "Request was cancelled by the client.",
+        errorType: "client_cancelled",
+        internalStatus: "cancelled",
+        expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
+      });
+      await appendLog(requestId, "Request cancelled before processing started.");
+      throw new UnrecoverableError("Request cancelled before processing.");
+    }
 
     await markInProgress(requestId);
     await appendLog(
@@ -57,10 +80,10 @@ const worker = new Worker<QueueJobPayload>(
           errorType: "client_cancelled",
           internalStatus: "cancelled",
           inferenceTimeSeconds: result.inferenceTimeSeconds,
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
         });
         await appendLog(requestId, "Request cancelled before completion.");
-        return;
+        throw new UnrecoverableError("Request cancelled by client.");
       }
 
       await finishAttempt({
@@ -73,26 +96,47 @@ const worker = new Worker<QueueJobPayload>(
         output: result.output,
         internalStatus: "succeeded",
         inferenceTimeSeconds: result.inferenceTimeSeconds,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
       });
       await appendLog(requestId, "Request completed successfully.");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
+      if (error instanceof UnrecoverableError) {
+        throw error;
+      }
+
+      const normalizedError = toExecutionError(error);
       await finishAttempt({
         requestId,
         gatewayRequestId,
-        status: "failed",
-        error: message,
-        errorType: "runner_server_error",
+        status: normalizedError.errorType === "timeout" ? "timeout" : "failed",
+        error: normalizedError.message,
+        errorType: normalizedError.errorType,
       });
+
+      const maxAttempts = job.opts.attempts ?? 1;
+      const attemptsUsed = job.attemptsMade + 1;
+      const hasRetryRemaining = normalizedError.retryable && attemptsUsed < maxAttempts;
+
+      if (hasRetryRemaining) {
+        await appendLog(
+          requestId,
+          `Attempt ${attemptNumber} failed (${normalizedError.errorType}). Retrying (${attemptsUsed}/${maxAttempts}).`,
+        );
+        throw error instanceof Error
+          ? error
+          : new Error(normalizedError.message);
+      }
+
       await markCompleted({
         requestId,
-        error: message,
-        errorType: "runner_server_error",
-        internalStatus: "failed",
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        error: normalizedError.message,
+        errorType: normalizedError.errorType,
+        internalStatus: normalizedError.errorType === "timeout" ? "timeout" : "failed",
+        expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
       });
-      await appendLog(requestId, `Request failed: ${message}`);
+      await appendLog(requestId, `Request failed: ${normalizedError.message}`);
+
+      throw new UnrecoverableError(normalizedError.message);
     }
   },
   {

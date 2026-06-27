@@ -8,12 +8,17 @@ import type {
 } from "../../domain";
 import { buildRequestUrls } from "../../domain";
 import { getModel } from "../../models/registry";
-import { enqueueRequest } from "../../queue/enqueue";
+import {
+  enqueueRequest,
+  hasActiveRequestJob,
+  removeQueuedRequestJob,
+} from "../../queue/enqueue";
 import { getQueuePosition } from "../../queue/position";
 import { appendLog, listLogs } from "../../services/logService";
 import {
   createRequest,
   getRequest,
+  markCompleted,
   markCancellationRequested,
 } from "../../services/requestService";
 import { createRequestId } from "../../utils/ids";
@@ -160,7 +165,29 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
       }
 
       await markCancellationRequested(row.requestId);
-      await appendLog(row.requestId, "Cancellation requested by client.");
+
+      const removedQueuedJob = await removeQueuedRequestJob(row.requestId);
+      if (removedQueuedJob) {
+        await markCompleted({
+          requestId: row.requestId,
+          error: "Request was cancelled by the client.",
+          errorType: "client_cancelled",
+          internalStatus: "cancelled",
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        });
+        await appendLog(row.requestId, "Queued request cancelled before execution.");
+      } else if (await hasActiveRequestJob(row.requestId)) {
+        await appendLog(
+          row.requestId,
+          "Cancellation requested while request is in progress.",
+        );
+      } else {
+        await appendLog(
+          row.requestId,
+          "Cancellation requested; worker will honor on next check.",
+        );
+      }
+
       const response: RequestCancelResponse = {
         status: "CANCELLATION_REQUESTED",
         request_id: row.requestId,
