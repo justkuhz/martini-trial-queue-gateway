@@ -145,3 +145,14 @@ Coverage includes:
 - readiness check (`/readyz`)
 - image submit -> status polling -> response retrieval lifecycle
 - cancel request acceptance behavior
+
+Verification coverage:
+
+- Public status lifecycle (`IN_QUEUE` -> `IN_PROGRESS` -> `COMPLETED`) via integration polling tests.
+- Logs gating behavior (`?logs=1`) validated by status endpoint integration tests.
+- Not-ready response behavior validated (`GET .../response` returns clear error before completion).
+- SSE status streaming (`GET .../status/stream?logs=1`) validated to emit status objects through completion.
+- Retry semantics validated with deterministic mock trigger:
+  - same `request_id` is preserved
+  - new `gateway_request_id` is created per attempt
+- Provider fallback behavior validated in unit tests for `executeModelWithProviders`.

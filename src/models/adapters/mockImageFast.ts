@@ -1,5 +1,8 @@
 import type { ModelProviderAdapter, ModelRunResult } from "./base";
+import { ModelExecutionError } from "../../domain";
 import { sleepWithSignal } from "./utils";
+
+const forcedRetryOnceTracker = new Set<string>();
 
 export const mockImageFastProvider: ModelProviderAdapter = {
   providerId: "mock-image-primary",
@@ -11,6 +14,17 @@ export const mockImageFastProvider: ModelProviderAdapter = {
     await sleepWithSignal(700, context.signal);
 
     const prompt = String(input.prompt ?? "");
+    if (
+      prompt.includes("__force_retry_once") &&
+      !forcedRetryOnceTracker.has(context.requestId)
+    ) {
+      forcedRetryOnceTracker.add(context.requestId);
+      throw new ModelExecutionError(
+        "Forced one-time retryable error for testing.",
+        "runner_server_error",
+      );
+    }
+
     const seed = Number(input.seed ?? 42);
 
     return {

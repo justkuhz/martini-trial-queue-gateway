@@ -2,6 +2,8 @@ import type { ModelProviderAdapter, ModelRunResult } from "./base";
 import { ModelExecutionError } from "../../domain";
 import { sleepWithSignal } from "./utils";
 
+const forcedRetryOnceTracker = new Set<string>();
+
 export const mockVideoFastPrimaryProvider: ModelProviderAdapter = {
   providerId: "mock-video-primary",
   async run(input, context): Promise<ModelRunResult> {
@@ -11,6 +13,18 @@ export const mockVideoFastPrimaryProvider: ModelProviderAdapter = {
     await context.log("Rendering frames...");
     await sleepWithSignal(1200, context.signal);
 
+    const prompt = String(input.prompt ?? "");
+    if (
+      prompt.includes("__force_retry_once") &&
+      !forcedRetryOnceTracker.has(context.requestId)
+    ) {
+      forcedRetryOnceTracker.add(context.requestId);
+      throw new ModelExecutionError(
+        "Forced one-time retryable error for testing.",
+        "runner_server_error",
+      );
+    }
+
     // Intentionally fail sometimes to exercise retry behavior.
     if (Math.random() < 0.25) {
       throw new ModelExecutionError(
@@ -19,7 +33,6 @@ export const mockVideoFastPrimaryProvider: ModelProviderAdapter = {
       );
     }
 
-    const prompt = String(input.prompt ?? "");
     const seed = Number(input.seed ?? 42);
 
     return {
