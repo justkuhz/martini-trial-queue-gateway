@@ -11,7 +11,9 @@
     "start:worker": "node dist/worker/worker.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "smoke": "bash ./scripts/smoke.sh",
+    "test:integration": "tsx --test tests/integration/**/*.test.ts"
   },
   "keywords": [],
   "author": "",

@@ -87,6 +87,10 @@ export async function cleanupQueueHistory(): Promise<{
   };
 }
 
+export async function checkQueueConnectivity(): Promise<void> {
+  await requestQueue.getJobCounts("waiting");
+}
+
 export async function closeQueue(): Promise<void> {
   await requestQueue.close();
 }

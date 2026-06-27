@@ -91,3 +91,57 @@ Retention and expiry strategy:
 - Stuck `running` requests are reconciled to `timeout` if they exceed a safety threshold.
 - BullMQ history is kept short-lived (age + count caps) and periodically cleaned for completed/failed jobs.
 - Requests that are already expired/deleted are treated as `404 NOT_FOUND` by API endpoints.
+
+Infrastructure and runflow:
+
+- Start infra and apply DB schema:
+
+```bash
+docker compose up -d
+npm run db:migrate
+```
+
+- Start runtime processes in separate terminals:
+
+```bash
+npm run dev:api
+npm run dev:worker
+```
+
+- API startup includes fail-fast dependency checks for DB + queue connectivity.
+- Readiness endpoint is available at:
+
+```txt
+GET /readyz
+```
+
+Expected response:
+
+```json
+{
+  "ok": true,
+  "dependencies": {
+    "db": "up",
+    "queue": "up"
+  }
+}
+```
+
+Smoke and integration testing:
+
+- Quick smoke test against local stack:
+
+```bash
+npm run smoke
+```
+
+- Minimal integration test suite for core endpoints:
+
+```bash
+npm run test:integration
+```
+
+Coverage includes:
+- readiness check (`/readyz`)
+- image submit -> status polling -> response retrieval lifecycle
+- cancel request acceptance behavior
