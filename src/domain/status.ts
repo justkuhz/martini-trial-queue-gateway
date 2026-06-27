@@ -25,3 +25,16 @@ export const ATTEMPT_STATUSES = [
 ] as const;
 
 export type AttemptStatus = (typeof ATTEMPT_STATUSES)[number];
+
+export function toPublicStatus(
+  internalStatus: InternalRequestStatus,
+): PublicRequestStatus {
+  if (internalStatus === "queued") {
+    return "IN_QUEUE";
+  }
+  if (internalStatus === "running") {
+    return "IN_PROGRESS";
+  }
+
+  return "COMPLETED";
+}

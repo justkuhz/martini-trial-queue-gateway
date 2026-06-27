@@ -2,7 +2,7 @@ import { and, eq, ne } from "drizzle-orm";
 
 import { db } from "../db/client";
 import { requests } from "../db/schema";
-import type { ErrorType, InternalRequestStatus } from "../domain";
+import { toPublicStatus, type ErrorType, type InternalRequestStatus } from "../domain";
 
 export async function createRequest(params: {
   requestId: string;
@@ -12,7 +12,7 @@ export async function createRequest(params: {
   await db.insert(requests).values({
     requestId: params.requestId,
     modelId: params.modelId,
-    status: "IN_QUEUE",
+    status: toPublicStatus("queued"),
     internalStatus: "queued",
     inputJson: params.input,
   });
@@ -40,7 +40,7 @@ export async function markInProgress(requestId: string): Promise<void> {
   await db
     .update(requests)
     .set({
-      status: "IN_PROGRESS",
+      status: toPublicStatus("running"),
       internalStatus: "running",
       startedAt: new Date(),
     })
@@ -54,7 +54,7 @@ export async function markInProgressIfNotCompleted(
   const updatedRows = await db
     .update(requests)
     .set({
-      status: "IN_PROGRESS",
+      status: toPublicStatus("running"),
       internalStatus: "running",
       startedAt: new Date(),
     })
@@ -77,7 +77,7 @@ export async function markCompleted(params: {
   await db
     .update(requests)
     .set({
-      status: "COMPLETED",
+      status: toPublicStatus(internalStatus),
       internalStatus,
       outputJson: params.output,
       error: params.error,
@@ -103,7 +103,7 @@ export async function markCompletedIfNotCompleted(params: {
   const updatedRows = await db
     .update(requests)
     .set({
-      status: "COMPLETED",
+      status: toPublicStatus(internalStatus),
       internalStatus,
       outputJson: params.output,
       error: params.error,

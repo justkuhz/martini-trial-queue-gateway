@@ -6,7 +6,7 @@ import type {
   RequestStatusResponse,
   SubmitRequestResponse,
 } from "../../domain";
-import { buildRequestUrls } from "../../domain";
+import { buildRequestUrls, toPublicStatus } from "../../domain";
 import { getModel } from "../../models/registry";
 import {
   enqueueRequest,
@@ -18,7 +18,7 @@ import { appendLog, listLogs } from "../../services/logService";
 import {
   createRequest,
   getRequest,
-  markCompleted,
+  markCompletedIfNotCompleted,
   markCancellationRequested,
 } from "../../services/requestService";
 import { createRequestId } from "../../utils/ids";
@@ -49,16 +49,25 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const requestId = createRequestId();
+      const parsedInput = model.inputSchema.safeParse(request.body ?? {});
+      if (!parsedInput.success) {
+        return reply.code(400).send({
+          error: "Invalid request body.",
+          error_type: "bad_request",
+          details: parsedInput.error.flatten(),
+        });
+      }
+
       await createRequest({
         requestId,
         modelId,
-        input: request.body ?? {},
+        input: parsedInput.data,
       });
       await appendLog(requestId, "Request accepted and queued.");
       await enqueueRequest({
         requestId,
         modelId,
-        input: request.body ?? {},
+        input: parsedInput.data,
       });
 
       const queuePosition = await getQueuePosition(requestId);
@@ -83,8 +92,9 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
+      const publicStatus = toPublicStatus(row.internalStatus);
       const payload: RequestStatusResponse = {
-        status: row.status,
+        status: publicStatus,
         request_id: row.requestId,
         response_url: buildRequestUrls(env.baseUrl, modelId, row.requestId)
           .response_url,
@@ -97,11 +107,11 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         }));
       }
 
-      if (row.status === "IN_QUEUE") {
+      if (publicStatus === "IN_QUEUE") {
         payload.queue_position = await getQueuePosition(row.requestId);
       }
 
-      if (row.status === "COMPLETED") {
+      if (publicStatus === "COMPLETED") {
         payload.metrics = row.inferenceTimeSeconds
           ? { inference_time: row.inferenceTimeSeconds }
           : undefined;
@@ -117,6 +127,13 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
     "/v1/queue/:modelOwner/:modelName/requests/:requestId/response",
     async (request, reply) => {
       const modelId = toModelId(request.params);
+      const model = getModel(modelId);
+      if (!model) {
+        return reply.code(404).send({
+          error: "Unknown model_id",
+        });
+      }
+
       const row = await getRequest(request.params.requestId, modelId);
       if (!row) {
         return reply.code(404).send({
@@ -125,11 +142,12 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
-      if (row.status !== "COMPLETED") {
+      const publicStatus = toPublicStatus(row.internalStatus);
+      if (publicStatus !== "COMPLETED") {
         return reply.code(409).send({
           error: "Response not ready yet.",
           request_id: row.requestId,
-          status: row.status,
+          status: publicStatus,
         });
       }
 
@@ -141,7 +159,16 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
-      return reply.send(row.outputJson ?? {});
+      const parsedOutput = model.outputSchema.safeParse(row.outputJson ?? {});
+      if (!parsedOutput.success) {
+        return reply.code(500).send({
+          error: "Stored response payload failed model output validation.",
+          error_type: "internal_error",
+          request_id: row.requestId,
+        });
+      }
+
+      return reply.send(parsedOutput.data);
     },
   );
 
@@ -157,7 +184,8 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
-      if (row.status === "COMPLETED") {
+      const publicStatus = toPublicStatus(row.internalStatus);
+      if (publicStatus === "COMPLETED") {
         return reply.send({
           status: "ALREADY_COMPLETED",
           request_id: row.requestId,
@@ -168,7 +196,7 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
 
       const removedQueuedJob = await removeQueuedRequestJob(row.requestId);
       if (removedQueuedJob) {
-        await markCompleted({
+        await markCompletedIfNotCompleted({
           requestId: row.requestId,
           error: "Request was cancelled by the client.",
           errorType: "client_cancelled",

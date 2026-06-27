@@ -1,3 +1,5 @@
+import type { ZodType } from "zod";
+
 export const MODEL_IDS = ["martini/image-fast", "martini/video-fast"] as const;
 
 export type ModelId = (typeof MODEL_IDS)[number];
@@ -26,4 +28,6 @@ export type RegisteredModel = {
   modelId: string;
   requestTimeoutSeconds: number;
   providers: ModelProviderAdapter[];
+  inputSchema: ZodType<Record<string, unknown>>;
+  outputSchema: ZodType<Record<string, unknown>>;
 };
