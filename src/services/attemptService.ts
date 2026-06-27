@@ -62,3 +62,22 @@ export async function finishAttempt(params: {
     );
 }
 
+export async function listAttemptsForRequest(requestId: string) {
+  return db
+    .select()
+    .from(requestAttempts)
+    .where(eq(requestAttempts.requestId, requestId))
+    .orderBy(desc(requestAttempts.attemptNumber));
+}
+
+export async function getLatestAttempt(requestId: string) {
+  const [latest] = await db
+    .select()
+    .from(requestAttempts)
+    .where(eq(requestAttempts.requestId, requestId))
+    .orderBy(desc(requestAttempts.attemptNumber))
+    .limit(1);
+
+  return latest;
+}
+

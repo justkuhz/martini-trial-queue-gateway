@@ -14,13 +14,14 @@ import {
   removeQueuedRequestJob,
 } from "../../queue/enqueue";
 import { getQueuePosition } from "../../queue/position";
-import { appendLog, listLogs } from "../../services/logService";
+import { appendLog } from "../../services/logService";
 import {
   createRequest,
   getRequest,
   markCompletedIfNotCompleted,
   markCancellationRequested,
 } from "../../services/requestService";
+import { buildRequestStatusPayload } from "../../services/statusService";
 import { createRequestId } from "../../utils/ids";
 
 type ModelParams = {
@@ -92,34 +93,95 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
-      const publicStatus = toPublicStatus(row.internalStatus);
-      const payload: RequestStatusResponse = {
-        status: publicStatus,
-        request_id: row.requestId,
-        response_url: buildRequestUrls(env.baseUrl, modelId, row.requestId)
-          .response_url,
-      };
-
-      if (request.query.logs === "1") {
-        payload.logs = (await listLogs(row.requestId)).map((log) => ({
-          message: log.message,
-          timestamp: log.timestamp.toISOString(),
-        }));
-      }
-
-      if (publicStatus === "IN_QUEUE") {
-        payload.queue_position = await getQueuePosition(row.requestId);
-      }
-
-      if (publicStatus === "COMPLETED") {
-        payload.metrics = row.inferenceTimeSeconds
-          ? { inference_time: row.inferenceTimeSeconds }
-          : undefined;
-        payload.error = row.error ?? undefined;
-        payload.error_type = row.errorType ?? undefined;
-      }
+      const payload = await buildRequestStatusPayload({
+        row,
+        modelId,
+        baseUrl: env.baseUrl,
+        includeLogs: request.query.logs === "1",
+      });
 
       return reply.send(payload);
+    },
+  );
+
+  app.get<{ Params: RequestParams; Querystring: { logs?: string } }>(
+    "/v1/queue/:modelOwner/:modelName/requests/:requestId/status/stream",
+    async (request, reply) => {
+      const modelId = toModelId(request.params);
+      const model = getModel(modelId);
+      if (!model) {
+        return reply.code(404).send({
+          error: "Unknown model_id",
+        });
+      }
+
+      const initialRow = await getRequest(request.params.requestId, modelId);
+      if (!initialRow) {
+        return reply.code(404).send({
+          status: "NOT_FOUND",
+          request_id: request.params.requestId,
+        });
+      }
+
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+
+      let closed = false;
+      let inFlight = false;
+
+      const writeStatusEvent = async (): Promise<void> => {
+        if (closed || inFlight) {
+          return;
+        }
+        inFlight = true;
+
+        try {
+          const row = await getRequest(request.params.requestId, modelId);
+          if (!row) {
+            reply.raw.write(
+              `event: error\ndata: ${JSON.stringify({
+                status: "NOT_FOUND",
+                request_id: request.params.requestId,
+              })}\n\n`,
+            );
+            closed = true;
+            clearInterval(intervalId);
+            reply.raw.end();
+            return;
+          }
+
+          const payload = await buildRequestStatusPayload({
+            row,
+            modelId,
+            baseUrl: env.baseUrl,
+            includeLogs: request.query.logs === "1",
+          });
+
+          reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+          if (payload.status === "COMPLETED") {
+            closed = true;
+            clearInterval(intervalId);
+            reply.raw.end();
+          }
+        } finally {
+          inFlight = false;
+        }
+      };
+
+      const intervalId = setInterval(() => {
+        void writeStatusEvent();
+      }, 1000);
+
+      request.raw.on("close", () => {
+        closed = true;
+        clearInterval(intervalId);
+      });
+
+      await writeStatusEvent();
+      return reply;
     },
   );
 
