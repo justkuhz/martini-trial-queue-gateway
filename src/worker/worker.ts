@@ -3,8 +3,8 @@ import "dotenv/config";
 import { Worker } from "bullmq";
 
 import { env } from "../config/env";
+import type { QueueJobPayload } from "../domain";
 import { getModel } from "../models/registry";
-import type { QueueJobPayload } from "../queue/enqueue";
 import { finishAttempt, startAttempt } from "../services/attemptService";
 import { appendLog } from "../services/logService";
 import { getRequest, markCompleted, markInProgress } from "../services/requestService";

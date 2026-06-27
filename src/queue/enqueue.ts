@@ -3,21 +3,18 @@ import "dotenv/config";
 import { Queue } from "bullmq";
 
 import { env } from "../config/env";
-
-export type QueueJobPayload = {
-  requestId: string;
-  modelId: string;
-  input: Record<string, unknown>;
-};
+import { REQUEST_QUEUE_JOB_NAME, type QueueJobPayload } from "../domain";
 
 const queueConnection = {
   url: env.redisUrl,
 };
 
-export const requestQueue = new Queue<QueueJobPayload, void, "model-request">(
-  env.queueName,
-  {
-    connection: queueConnection,
+export const requestQueue = new Queue<
+  QueueJobPayload,
+  void,
+  typeof REQUEST_QUEUE_JOB_NAME
+>(env.queueName, {
+  connection: queueConnection,
   defaultJobOptions: {
     attempts: 2,
     backoff: {
@@ -26,12 +23,11 @@ export const requestQueue = new Queue<QueueJobPayload, void, "model-request">(
     },
     removeOnComplete: 1000,
     removeOnFail: 1000,
-    },
   },
-);
+});
 
 export async function enqueueRequest(payload: QueueJobPayload): Promise<void> {
-  await requestQueue.add("model-request", payload, {
+  await requestQueue.add(REQUEST_QUEUE_JOB_NAME, payload, {
     jobId: payload.requestId,
   });
 }

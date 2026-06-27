@@ -1,6 +1,12 @@
 import type { FastifyPluginAsync } from "fastify";
 
 import { env } from "../../config/env";
+import type {
+  RequestCancelResponse,
+  RequestStatusResponse,
+  SubmitRequestResponse,
+} from "../../domain";
+import { buildRequestUrls } from "../../domain";
 import { getModel } from "../../models/registry";
 import { enqueueRequest } from "../../queue/enqueue";
 import { getQueuePosition } from "../../queue/position";
@@ -23,15 +29,6 @@ type RequestParams = ModelParams & {
 
 function toModelId(params: ModelParams): string {
   return `${params.modelOwner}/${params.modelName}`;
-}
-
-function buildRequestUrls(modelId: string, requestId: string) {
-  const base = `${env.baseUrl}/v1/queue/${modelId}/requests/${requestId}`;
-  return {
-    response_url: `${base}/response`,
-    status_url: `${base}/status`,
-    cancel_url: `${base}/cancel`,
-  };
 }
 
 export const queueRoutes: FastifyPluginAsync = async (app) => {
@@ -60,11 +57,12 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
       });
 
       const queuePosition = await getQueuePosition(requestId);
-      return reply.code(202).send({
+      const response: SubmitRequestResponse = {
         request_id: requestId,
         queue_position: queuePosition,
-        ...buildRequestUrls(modelId, requestId),
-      });
+        ...buildRequestUrls(env.baseUrl, modelId, requestId),
+      };
+      return reply.code(202).send(response);
     },
   );
 
@@ -80,10 +78,11 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
-      const payload: Record<string, unknown> = {
+      const payload: RequestStatusResponse = {
         status: row.status,
         request_id: row.requestId,
-        response_url: buildRequestUrls(modelId, row.requestId).response_url,
+        response_url: buildRequestUrls(env.baseUrl, modelId, row.requestId)
+          .response_url,
       };
 
       if (request.query.logs === "1") {
@@ -162,10 +161,11 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
 
       await markCancellationRequested(row.requestId);
       await appendLog(row.requestId, "Cancellation requested by client.");
-      return reply.send({
+      const response: RequestCancelResponse = {
         status: "CANCELLATION_REQUESTED",
         request_id: row.requestId,
-      });
+      };
+      return reply.send(response);
     },
   );
 };
