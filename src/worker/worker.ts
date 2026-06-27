@@ -9,6 +9,7 @@ import { executeModelWithProviders } from "../models/executeModel";
 import { getModel } from "../models/registry";
 import { finishAttempt, startAttempt } from "../services/attemptService";
 import { appendLog } from "../services/logService";
+import { runRetentionCycle } from "../services/retentionService";
 import {
   getRequest,
   markCompletedIfNotCompleted,
@@ -16,6 +17,8 @@ import {
 } from "../services/requestService";
 
 const REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const RETENTION_INTERVAL_MS = 5 * 60 * 1000;
+const MAX_RUNNING_SECONDS_BEFORE_RECONCILE = 10 * 60;
 
 const worker = new Worker<QueueJobPayload>(
   env.queueName,
@@ -180,7 +183,28 @@ worker.on("failed", (job, error) => {
   console.error(`Job ${job?.id ?? "unknown"} failed`, error);
 });
 
+// Periodic retention keeps DB/Redis lean without impacting request flow.
+const retentionTimer = setInterval(() => {
+  void runRetentionCycle({
+    maxRunningSeconds: MAX_RUNNING_SECONDS_BEFORE_RECONCILE,
+    requestTtlMs: REQUEST_TTL_MS,
+  }).then((summary) => {
+    // Only emit logs when work was actually done to reduce noise.
+    if (
+      summary.expiredRequestsRemoved > 0 ||
+      summary.stuckRunningReconciled > 0 ||
+      summary.queueCompletedRemoved > 0 ||
+      summary.queueFailedRemoved > 0
+    ) {
+      // eslint-disable-next-line no-console
+      console.log("Retention cycle summary", summary);
+    }
+  });
+}, RETENTION_INTERVAL_MS);
+retentionTimer.unref();
+
 process.on("SIGINT", async () => {
+  clearInterval(retentionTimer);
   await worker.close();
   process.exit(0);
 });

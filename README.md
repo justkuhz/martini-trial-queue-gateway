@@ -83,3 +83,11 @@ Model mocks and response behavior:
   - Returns `200` with model-specific payload when request is completed successfully.
   - Returns `409` with a clear `"Response not ready yet."` error when request is still `IN_QUEUE` or `IN_PROGRESS`.
   - Returns `422` with `error` and `error_type` when request completed with an execution error.
+
+Retention and expiry strategy:
+
+- Completed requests are retained with `expires_at` and cleaned in batches by a periodic retention cycle.
+- Deleting an expired `requests` row automatically removes related `request_logs` and `request_attempts` via FK cascade.
+- Stuck `running` requests are reconciled to `timeout` if they exceed a safety threshold.
+- BullMQ history is kept short-lived (age + count caps) and periodically cleaned for completed/failed jobs.
+- Requests that are already expired/deleted are treated as `404 NOT_FOUND` by API endpoints.

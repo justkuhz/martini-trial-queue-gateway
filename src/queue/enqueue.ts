@@ -21,8 +21,14 @@ export const requestQueue = new Queue<
       type: "exponential",
       delay: 1_000,
     },
-    removeOnComplete: 1000,
-    removeOnFail: 1000,
+    removeOnComplete: {
+      age: 60 * 60,
+      count: 1000,
+    },
+    removeOnFail: {
+      age: 3 * 24 * 60 * 60,
+      count: 5000,
+    },
   },
 });
 
@@ -62,6 +68,23 @@ export async function hasActiveRequestJob(requestId: string): Promise<boolean> {
 
   const state = await job.getState();
   return state === "active";
+}
+
+export async function cleanupQueueHistory(): Promise<{
+  completedRemoved: number;
+  failedRemoved: number;
+}> {
+  const completedRemoved = (
+    await requestQueue.clean(60 * 60 * 1000, 5000, "completed")
+  ).length;
+  const failedRemoved = (
+    await requestQueue.clean(3 * 24 * 60 * 60 * 1000, 5000, "failed")
+  ).length;
+
+  return {
+    completedRemoved,
+    failedRemoved,
+  };
 }
 
 export async function closeQueue(): Promise<void> {

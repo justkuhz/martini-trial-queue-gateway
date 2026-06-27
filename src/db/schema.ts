@@ -61,6 +61,7 @@ export const requests = pgTable(
       table.internalStatus,
     ),
     createdAtIdx: index("requests_created_at_idx").on(table.createdAt),
+    expiresAtIdx: index("requests_expires_at_idx").on(table.expiresAt),
     modelAndRequestIdx: index("requests_model_request_idx").on(
       table.modelId,
       table.requestId,
