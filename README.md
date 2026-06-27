@@ -1,8 +1,8 @@
-# Trial Project: Martini Queue Gateway (fal-like)
+# Trial Project: Martini Queue Gateway 
 
 ## Background
 
-At Martini, we route image and video generation requests through model endpoints and execute them asynchronously. For this trial, build a minimal **fal-like queue gateway**.
+At Martini, we route image and video generation requests through model endpoints and execute them asynchronously. For this trial, build a minimal **fal-like（fal.ai） queue gateway**.
 
 This project should focus on the async queue pattern:
 
@@ -642,18 +642,6 @@ X-Fal-Request-Timeout: 30
 ```
 
 Interpret this as a server-side start timeout: the request should fail before processing if it waits too long to start. It should not limit inference after the worker has already started processing.
-
----
-
-## 5. Request Storage Toggle
-
-Support:
-
-```txt
-X-Fal-Store-IO: 0
-```
-
-When set, avoid storing full input/output JSON payloads if possible. It is fine to store enough metadata to debug status.
 
 ---
 
