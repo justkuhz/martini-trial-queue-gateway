@@ -1,4 +1,4 @@
-# Trial Project: Mini fal-like Queue Gateway
+# Trial Project: Martini Queue Gateway (fal-like)
 
 ## Background
 
@@ -12,7 +12,7 @@ submit request -> get request_id -> poll status -> retrieve response
 
 You do **not** need to integrate real AI models. Mock model endpoints are expected.
 
-Please spend **no more than 6–8 hours**.
+Please spend **no more than 12 hours**.
 
 ---
 
@@ -834,7 +834,7 @@ What you would improve for production
 
 # Time Limit
 
-Please spend **no more than 6–8 hours**.
+Please spend **no more than 12 hours**.
 
 We are not looking for a complete production clone of fal. We are looking for a thoughtful, well-structured minimal queue gateway that follows fal-like conventions closely.
 
