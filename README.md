@@ -31,16 +31,16 @@ Postgres and executed by a background BullMQ worker.
 
 ```txt
               HTTP (Fastify)                         Worker (BullMQ)
-  ┌───────────────────────────────┐        ┌──────────────────────────────┐
+  ┌────────────────────────────────┐        ┌──────────────────────────────┐
   │ POST /v1/queue/:model          │        │ pick job                     │
   │   1. validate input (Zod)      │        │  ├ guard: cancelled? timeout?│
   │   2. persist request row  ─────┼──DB────┤  ├ mark IN_PROGRESS (guarded)│
   │   3. enqueue job (jobId=req_id)┼─Redis──┤  ├ start attempt (new gw id) │
   │   4. return 202 + URLs         │        │  ├ run model adapter(s)      │
-  └───────────────────────────────┘        │  ├ persist output / error    │
-  GET .../status  (reads DB)               │  ├ mark COMPLETED (guarded)  │
-  GET .../response (reads DB)              │  └ deliver webhook (claimed) │
-  PUT .../cancel  (DB + Redis)             └──────────────────────────────┘
+  └────────────────────────────────┘        │  ├ persist output / error    │
+  GET .../status  (reads DB)                │  ├ mark COMPLETED (guarded)  │
+  GET .../response (reads DB)               │  └ deliver webhook (claimed) │
+  PUT .../cancel  (DB + Redis)              └──────────────────────────────┘
 ```
 
 - **`request_id`** is the durable identity: it is the Postgres primary key *and*
@@ -362,4 +362,3 @@ Postgres `COUNT` (`requests_queue_position_idx` on
 deep backlogs. Status/response reads are single indexed lookups. The remaining
 production work for sustained high volume is listed above (webhook queue,
 autoscaling, partitioning/archival, observability).
-```
