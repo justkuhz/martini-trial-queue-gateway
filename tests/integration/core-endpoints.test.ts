@@ -179,6 +179,51 @@ test("readyz responds with dependency health", async () => {
   assert.equal(body.dependencies.queue, "up");
 });
 
+test("example curl command flow succeeds with auth header", async () => {
+  const submit = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: "example curl flow prompt" }),
+  });
+  assert.equal(submit.status, 202);
+  const submitBody = submit.body as SubmitResponse;
+  assert.ok(submitBody.request_id.startsWith("req_"));
+  assert.ok(submitBody.status_url.includes(`/v1/queue/${IMAGE_MODEL}/requests/`));
+  assert.ok(submitBody.response_url.includes(`/v1/queue/${IMAGE_MODEL}/requests/`));
+  assert.ok(submitBody.cancel_url.includes(`/v1/queue/${IMAGE_MODEL}/requests/`));
+
+  const status = await fetchJson(`${submitBody.status_url}?logs=1`);
+  assert.equal(status.status, 200);
+  assert.ok(
+    status.body.status === "IN_QUEUE" ||
+      status.body.status === "IN_PROGRESS" ||
+      status.body.status === "COMPLETED",
+  );
+  assert.ok(Array.isArray(status.body.logs));
+
+  await waitForCompletedStatus(submitBody.status_url);
+  const response = await fetchJson(submitBody.response_url);
+  assert.equal(response.status, 200);
+  assert.ok(Array.isArray(response.body.images));
+
+  const cancel = await fetchJson(submitBody.cancel_url, { method: "PUT" });
+  assert.equal(cancel.status, 200);
+  assert.ok(
+    cancel.body.status === "CANCELLATION_REQUESTED" ||
+      cancel.body.status === "ALREADY_COMPLETED",
+  );
+
+  const webhookSubmit = await fetchJson(
+    `${BASE_URL}/v1/queue/${IMAGE_MODEL}?fal_webhook=https://example.com/webhook`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "example curl webhook flow prompt" }),
+    },
+  );
+  assert.equal(webhookSubmit.status, 202);
+});
+
 test("auth failure returns 401 with authentication error details", async () => {
   const { status, body } = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
     method: "POST",
