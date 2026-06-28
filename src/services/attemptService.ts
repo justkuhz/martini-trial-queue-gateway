@@ -5,6 +5,13 @@ import { requestAttempts, requests } from "../db/schema";
 import type { AttemptStatus, ErrorType } from "../domain";
 import { createGatewayRequestId } from "../utils/ids";
 
+/**
+ * Tracks per-attempt execution rows. One request (stable request_id) can have
+ * many attempts; each attempt gets a fresh gateway_request_id and an
+ * incrementing attempt_number, giving retry/debug visibility that is distinct
+ * from the request's own identity.
+ */
+
 export async function startAttempt(params: {
   requestId: string;
   modelId: string;

@@ -4,6 +4,12 @@ import { db } from "../db/client";
 import { requests } from "../db/schema";
 import { toPublicStatus, type ErrorType, type InternalRequestStatus } from "../domain";
 
+/**
+ * Persistence for the `requests` table. The `*IfNotCompleted` variants guard the
+ * transition with `WHERE status != 'COMPLETED'` so a terminal row is immutable
+ * under crash recovery or duplicate job delivery, keeping completion idempotent.
+ */
+
 export async function createRequest(params: {
   requestId: string;
   modelId: string;

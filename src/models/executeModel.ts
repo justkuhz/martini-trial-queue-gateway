@@ -7,6 +7,12 @@ import {
   type RegisteredModel,
 } from "../domain";
 
+/**
+ * Runs a model's providers in order (primary first, then fallbacks), advancing
+ * to the next only on a retryable error and when fallback is enabled. A
+ * non-retryable error, the last provider, or `disableFallback` stops the chain
+ * and rethrows the failure to the worker.
+ */
 export async function executeModelWithProviders(
   model: RegisteredModel,
   input: Record<string, unknown>,

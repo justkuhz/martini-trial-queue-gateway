@@ -1,3 +1,13 @@
+/**
+ * Background worker that drains the request queue and executes model adapters.
+ *
+ * Each job runs the full lifecycle: pre-flight guards (missing / cancelled /
+ * start-timeout) -> mark IN_PROGRESS -> run provider(s) -> persist result ->
+ * deliver webhook. Status transitions use guarded, idempotent writes so a BullMQ
+ * redelivery after a crash can never reopen a terminal request. Retryable
+ * failures are rethrown so BullMQ retries the same job (same request_id, new
+ * gateway_request_id); non-retryable failures complete terminally.
+ */
 import "dotenv/config";
 
 import { UnrecoverableError, Worker } from "bullmq";

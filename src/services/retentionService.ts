@@ -1,3 +1,8 @@
+/**
+ * Periodic housekeeping run on an interval from the worker: expire completed
+ * requests (FK-cascades to logs/attempts), reconcile stuck `running` rows to
+ * `timeout`, trim BullMQ history, and retry undelivered webhooks.
+ */
 import { and, eq, inArray, lte } from "drizzle-orm";
 
 import { db } from "../db/client";

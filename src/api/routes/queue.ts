@@ -1,10 +1,16 @@
+/**
+ * fal-like queue endpoints: submit, status (+ SSE stream), response, and cancel.
+ * An onRequest hook enforces `Authorization: Key <key>` on every route here. The
+ * HTTP layer stays model-agnostic — it validates input, persists, and enqueues,
+ * then only reads state; all model execution happens in the worker.
+ */
 import type { FastifyPluginAsync } from "fastify";
+import { z } from "zod";
 
 import { env } from "../../config/env";
 import type {
   QueuePriority,
   RequestCancelResponse,
-  RequestStatusResponse,
   SubmitRequestResponse,
 } from "../../domain";
 import { buildRequestUrls, toPublicStatus } from "../../domain";
@@ -145,7 +151,7 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({
           error: "Invalid request body.",
           error_type: "bad_request",
-          details: parsedInput.error.flatten(),
+          details: z.flattenError(parsedInput.error),
         });
       }
 
