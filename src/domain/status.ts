@@ -1,3 +1,6 @@
+// Public statuses are the only ones the API exposes. Internal statuses carry
+// richer detail (succeeded / failed / timeout / cancelled) and are mapped down
+// via toPublicStatus(), so internal state never leaks to clients.
 export const PUBLIC_REQUEST_STATUSES = [
   "IN_QUEUE",
   "IN_PROGRESS",

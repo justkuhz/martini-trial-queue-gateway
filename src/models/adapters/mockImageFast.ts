@@ -24,6 +24,12 @@ export const mockImageFastProvider: ModelProviderAdapter = {
         "runner_server_error",
       );
     }
+    if (prompt.includes("__force_bad_request")) {
+      throw new ModelExecutionError(
+        "Forced bad request error for testing.",
+        "bad_request",
+      );
+    }
 
     const seed = Number(input.seed ?? 42);
 

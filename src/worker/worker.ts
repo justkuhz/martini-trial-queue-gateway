@@ -1,12 +1,24 @@
+/**
+ * Background worker that drains the request queue and executes model adapters.
+ *
+ * Each job runs the full lifecycle: pre-flight guards (missing / cancelled /
+ * start-timeout) -> mark IN_PROGRESS -> run provider(s) -> persist result ->
+ * deliver webhook. Status transitions use guarded, idempotent writes so a BullMQ
+ * redelivery after a crash can never reopen a terminal request. Retryable
+ * failures are rethrown so BullMQ retries the same job (same request_id, new
+ * gateway_request_id); non-retryable failures complete terminally.
+ */
 import "dotenv/config";
 
 import { UnrecoverableError, Worker } from "bullmq";
 
 import { env } from "../config/env";
+import { closeDb } from "../db/client";
 import type { ModelRunContext, QueueJobPayload } from "../domain";
 import { toExecutionError } from "../domain";
 import { executeModelWithProviders } from "../models/executeModel";
 import { getModel } from "../models/registry";
+import { DEFAULT_RETRY_ATTEMPTS, closeQueue } from "../queue/enqueue";
 import { finishAttempt, startAttempt } from "../services/attemptService";
 import { appendLog } from "../services/logService";
 import { runRetentionCycle } from "../services/retentionService";
@@ -15,15 +27,40 @@ import {
   markCompletedIfNotCompleted,
   markInProgressIfNotCompleted,
 } from "../services/requestService";
+import { sendCompletionWebhook } from "../services/webhookService";
 
 const REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RETENTION_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_RUNNING_SECONDS_BEFORE_RECONCILE = 10 * 60;
 
+async function deliverCompletionWebhook(params: {
+  requestId: string;
+  gatewayRequestId: string;
+  output?: Record<string, unknown>;
+  error?: string;
+  errorType?:
+    | "runner_server_error"
+    | "runner_connection_error"
+    | "timeout"
+    | "bad_request"
+    | "internal_error"
+    | "client_cancelled";
+}): Promise<void> {
+  const result = await sendCompletionWebhook(params);
+  if (result.reason === "delivered") {
+    await appendLog(params.requestId, "Completion webhook delivered.");
+  } else if (result.reason === "delivery_failed") {
+    await appendLog(
+      params.requestId,
+      `Completion webhook delivery failed: ${result.error ?? "unknown error"}`,
+    );
+  }
+}
+
 const worker = new Worker<QueueJobPayload>(
   env.queueName,
   async (job) => {
-    const { requestId, modelId, input } = job.data;
+    const { requestId, modelId, input, startTimeoutSeconds, disableFallback } = job.data;
     const existingRequest = await getRequest(requestId, modelId);
     if (!existingRequest) {
       throw new UnrecoverableError(`Missing request row: ${requestId}`);
@@ -41,6 +78,13 @@ const worker = new Worker<QueueJobPayload>(
         internalStatus: "failed",
         expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
       });
+      const fallbackGatewayRequestId = existingRequest.latestGatewayRequestId ?? "gwreq_unknown";
+      await deliverCompletionWebhook({
+        requestId,
+        gatewayRequestId: fallbackGatewayRequestId,
+        error: `Unknown model: ${modelId}`,
+        errorType: "bad_request",
+      });
       throw new UnrecoverableError(`Unknown model: ${modelId}`);
     }
     if (existingRequest?.cancellationRequested) {
@@ -52,7 +96,39 @@ const worker = new Worker<QueueJobPayload>(
         expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
       });
       await appendLog(requestId, "Request cancelled before processing started.");
+      const fallbackGatewayRequestId = existingRequest.latestGatewayRequestId ?? "gwreq_unknown";
+      await deliverCompletionWebhook({
+        requestId,
+        gatewayRequestId: fallbackGatewayRequestId,
+        error: "Request was cancelled by the client.",
+        errorType: "client_cancelled",
+      });
       throw new UnrecoverableError("Request cancelled before processing.");
+    }
+
+    if (startTimeoutSeconds) {
+      const queueWaitMs = Date.now() - existingRequest.createdAt.getTime();
+      if (queueWaitMs > startTimeoutSeconds * 1000) {
+        await markCompletedIfNotCompleted({
+          requestId,
+          error: "Request timed out before starting execution.",
+          errorType: "timeout",
+          internalStatus: "timeout",
+          expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
+        });
+        await appendLog(
+          requestId,
+          `Request start timeout exceeded (${startTimeoutSeconds}s) while waiting in queue.`,
+        );
+        const fallbackGatewayRequestId = existingRequest.latestGatewayRequestId ?? "gwreq_unknown";
+        await deliverCompletionWebhook({
+          requestId,
+          gatewayRequestId: fallbackGatewayRequestId,
+          error: "Request timed out before starting execution.",
+          errorType: "timeout",
+        });
+        throw new UnrecoverableError("Start timeout exceeded before processing.");
+      }
     }
 
     // Conditional transition protects lifecycle integrity if BullMQ redelivers after crash.
@@ -71,6 +147,7 @@ const worker = new Worker<QueueJobPayload>(
       `Worker started processing (attempt ${attemptNumber}, ${gatewayRequestId}).`,
     );
 
+    // Bound inference with the model's request timeout via an abort signal.
     const abortController = new AbortController();
     const timeoutHandle = setTimeout(() => {
       abortController.abort();
@@ -85,10 +162,13 @@ const worker = new Worker<QueueJobPayload>(
           await appendLog(requestId, message);
         },
       };
-      const result = await executeModelWithProviders(model, input, runContext);
+      const result = await executeModelWithProviders(model, input, runContext, {
+        disableFallback,
+      });
       clearTimeout(timeoutHandle);
       await appendLog(requestId, "Done.");
 
+      // Honor a cancellation that landed while the model was still running.
       const currentRow = await getRequest(requestId, modelId);
       if (currentRow?.cancellationRequested) {
         await finishAttempt({
@@ -123,6 +203,11 @@ const worker = new Worker<QueueJobPayload>(
         expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
       });
       await appendLog(requestId, "Request completed successfully.");
+      await deliverCompletionWebhook({
+        requestId,
+        gatewayRequestId,
+        output: result.output,
+      });
     } catch (error) {
       clearTimeout(timeoutHandle);
       if (error instanceof UnrecoverableError) {
@@ -138,7 +223,8 @@ const worker = new Worker<QueueJobPayload>(
         errorType: normalizedError.errorType,
       });
 
-      const maxAttempts = job.opts.attempts ?? 1;
+      // Retry only retryable errors with attempts left; otherwise finalize below.
+      const maxAttempts = job.opts.attempts ?? DEFAULT_RETRY_ATTEMPTS;
       const attemptsUsed = job.attemptsMade + 1;
       const hasRetryRemaining = normalizedError.retryable && attemptsUsed < maxAttempts;
 
@@ -161,6 +247,12 @@ const worker = new Worker<QueueJobPayload>(
         expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
       });
       await appendLog(requestId, `Request failed: ${normalizedError.message}`);
+      await deliverCompletionWebhook({
+        requestId,
+        gatewayRequestId,
+        error: normalizedError.message,
+        errorType: normalizedError.errorType,
+      });
 
       throw new UnrecoverableError(normalizedError.message);
     }
@@ -194,7 +286,8 @@ const retentionTimer = setInterval(() => {
       summary.expiredRequestsRemoved > 0 ||
       summary.stuckRunningReconciled > 0 ||
       summary.queueCompletedRemoved > 0 ||
-      summary.queueFailedRemoved > 0
+      summary.queueFailedRemoved > 0 ||
+      summary.webhooksRetried > 0
     ) {
       // eslint-disable-next-line no-console
       console.log("Retention cycle summary", summary);
@@ -203,9 +296,33 @@ const retentionTimer = setInterval(() => {
 }, RETENTION_INTERVAL_MS);
 retentionTimer.unref();
 
-process.on("SIGINT", async () => {
+/**
+ * Graceful shutdown on SIGTERM (sent by Docker/Kubernetes) and SIGINT (Ctrl-C).
+ * Stops the retention timer, then `worker.close()` waits for in-flight jobs to
+ * finish before releasing the queue and DB connections, so a deploy/restart
+ * never abandons a job mid-execution. Guarded so repeated signals are no-ops.
+ */
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  // eslint-disable-next-line no-console
+  console.log(`Received ${signal}, draining worker...`);
   clearInterval(retentionTimer);
-  await worker.close();
+  try {
+    await worker.close(); // waits for active jobs to complete
+    await closeQueue();
+    await closeDb();
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("Error during worker shutdown", error);
+    process.exit(1);
+  }
   process.exit(0);
-});
+}
+
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
 

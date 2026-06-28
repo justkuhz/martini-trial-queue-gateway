@@ -1,14 +1,22 @@
+/**
+ * fal-like queue endpoints: submit, status (+ SSE stream), response, and cancel.
+ * An onRequest hook enforces `Authorization: Key <key>` on every route here. The
+ * HTTP layer stays model-agnostic — it validates input, persists, and enqueues,
+ * then only reads state; all model execution happens in the worker.
+ */
 import type { FastifyPluginAsync } from "fastify";
+import { z } from "zod";
 
 import { env } from "../../config/env";
 import type {
+  QueuePriority,
   RequestCancelResponse,
-  RequestStatusResponse,
   SubmitRequestResponse,
 } from "../../domain";
 import { buildRequestUrls, toPublicStatus } from "../../domain";
 import { getModel } from "../../models/registry";
 import {
+  QUEUE_PRIORITY_VALUE,
   enqueueRequest,
   hasActiveRequestJob,
   removeQueuedRequestJob,
@@ -33,12 +41,31 @@ type RequestParams = ModelParams & {
   requestId: string;
 };
 
+const LOCAL_TEST_API_KEY = "test_key";
+
 function toModelId(params: ModelParams): string {
   return `${params.modelOwner}/${params.modelName}`;
 }
 
 export const queueRoutes: FastifyPluginAsync = async (app) => {
-  app.post<{ Params: ModelParams; Body: Record<string, unknown> }>(
+  app.addHook("onRequest", async (request, reply) => {
+    const authHeader = request.headers.authorization;
+    const expectedHeader = `Key ${LOCAL_TEST_API_KEY}`;
+
+    if (authHeader !== expectedHeader) {
+      return reply.code(401).send({
+        error: "Unauthorized",
+        error_type: "authentication_error",
+        detail: `Expected Authorization header format: ${expectedHeader}`,
+      });
+    }
+  });
+
+  app.post<{
+    Params: ModelParams;
+    Body: Record<string, unknown>;
+    Querystring: { fal_webhook?: string };
+  }>(
     "/v1/queue/:modelOwner/:modelName",
     async (request, reply) => {
       const modelId = toModelId(request.params);
@@ -50,25 +77,106 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const requestId = createRequestId();
+
+      // Parse + validate the optional fal-like control headers; reject malformed values.
+      const rawNoRetry = request.headers["x-fal-no-retry"];
+      const noRetryHeader = Array.isArray(rawNoRetry) ? rawNoRetry[0] : rawNoRetry;
+      const noRetry = noRetryHeader === "1";
+      if (noRetryHeader !== undefined && noRetryHeader !== "1") {
+        return reply.code(400).send({
+          error: "Invalid X-Fal-No-Retry header. Use: 1",
+          error_type: "bad_request",
+        });
+      }
+
+      const rawPriority = request.headers["x-fal-queue-priority"];
+      const priorityValue = Array.isArray(rawPriority) ? rawPriority[0] : rawPriority;
+      const queuePriority: QueuePriority =
+        priorityValue === "low" ? "low" : "normal";
+      if (
+        priorityValue !== undefined &&
+        priorityValue !== "normal" &&
+        priorityValue !== "low"
+      ) {
+        return reply.code(400).send({
+          error: "Invalid X-Fal-Queue-Priority header. Use: normal or low",
+          error_type: "bad_request",
+        });
+      }
+
+      const rawStartTimeout = request.headers["x-fal-request-timeout"];
+      const startTimeoutValue = Array.isArray(rawStartTimeout)
+        ? rawStartTimeout[0]
+        : rawStartTimeout;
+      let startTimeoutSeconds: number | undefined;
+      if (startTimeoutValue !== undefined) {
+        const parsed = Number(startTimeoutValue);
+        if (!Number.isInteger(parsed) || parsed <= 0) {
+          return reply.code(400).send({
+            error: "Invalid X-Fal-Request-Timeout header. Use positive integer seconds.",
+            error_type: "bad_request",
+          });
+        }
+        startTimeoutSeconds = parsed;
+      }
+
+      const rawDisableFallback = request.headers["x-app-fal-disable-fallback"];
+      const disableFallbackHeader = Array.isArray(rawDisableFallback)
+        ? rawDisableFallback[0]
+        : rawDisableFallback;
+      const disableFallback = disableFallbackHeader === "true";
+      if (
+        disableFallbackHeader !== undefined &&
+        disableFallbackHeader !== "true" &&
+        disableFallbackHeader !== "false"
+      ) {
+        return reply.code(400).send({
+          error: "Invalid x-app-fal-disable-fallback header. Use: true or false",
+          error_type: "bad_request",
+        });
+      }
+
+      // Validate the optional completion webhook URL before doing any work.
+      let webhookUrl: string | undefined;
+      if (request.query.fal_webhook) {
+        try {
+          webhookUrl = new URL(request.query.fal_webhook).toString();
+        } catch {
+          return reply.code(400).send({
+            error: "Invalid fal_webhook URL.",
+            error_type: "bad_request",
+          });
+        }
+      }
+
+      // Validate the body against the model's input schema (shape is model-specific).
       const parsedInput = model.inputSchema.safeParse(request.body ?? {});
       if (!parsedInput.success) {
         return reply.code(400).send({
           error: "Invalid request body.",
           error_type: "bad_request",
-          details: parsedInput.error.flatten(),
+          details: z.flattenError(parsedInput.error),
         });
       }
 
+      // Persist before enqueuing so the worker always finds a row to act on.
       await createRequest({
         requestId,
         modelId,
         input: parsedInput.data,
+        webhookUrl,
+        priority: QUEUE_PRIORITY_VALUE[queuePriority],
       });
       await appendLog(requestId, "Request accepted and queued.");
       await enqueueRequest({
         requestId,
         modelId,
         input: parsedInput.data,
+        startTimeoutSeconds,
+        disableFallback,
+      }, {
+        noRetry,
+        priority: queuePriority,
       });
 
       const queuePosition = await getQueuePosition(requestId);
@@ -132,6 +240,9 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
       let closed = false;
       let inFlight = false;
 
+      // Emit one status event per tick. The inFlight/closed guards prevent
+      // overlapping DB reads and stop the interval once the stream ends or the
+      // request reaches COMPLETED.
       const writeStatusEvent = async (): Promise<void> => {
         if (closed || inFlight) {
           return;
@@ -204,6 +315,7 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
+      // Map state to HTTP: not ready -> 409, completed-with-error -> 422, else 200.
       const publicStatus = toPublicStatus(row.internalStatus);
       if (publicStatus !== "COMPLETED") {
         return reply.code(409).send({
@@ -221,6 +333,7 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
+      // Defensive: persisted output should always satisfy the model's schema.
       const parsedOutput = model.outputSchema.safeParse(row.outputJson ?? {});
       if (!parsedOutput.success) {
         return reply.code(500).send({
@@ -246,9 +359,10 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
+      // A terminal request can no longer be cancelled (spec: 400 Bad Request).
       const publicStatus = toPublicStatus(row.internalStatus);
       if (publicStatus === "COMPLETED") {
-        return reply.send({
+        return reply.code(400).send({
           status: "ALREADY_COMPLETED",
           request_id: row.requestId,
         });
@@ -256,6 +370,8 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
 
       await markCancellationRequested(row.requestId);
 
+      // If still queued, drop the job and finalize as cancelled. If already
+      // active, just record intent — the worker honors it cooperatively.
       const removedQueuedJob = await removeQueuedRequestJob(row.requestId);
       if (removedQueuedJob) {
         await markCompletedIfNotCompleted({
@@ -278,11 +394,12 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         );
       }
 
+      // Cancellation is acknowledged asynchronously (spec: 202 Accepted).
       const response: RequestCancelResponse = {
         status: "CANCELLATION_REQUESTED",
         request_id: row.requestId,
       };
-      return reply.send(response);
+      return reply.code(202).send(response);
     },
   );
 };

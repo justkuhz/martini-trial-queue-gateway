@@ -1,9 +1,15 @@
+/**
+ * Periodic housekeeping run on an interval from the worker: expire completed
+ * requests (FK-cascades to logs/attempts), reconcile stuck `running` rows to
+ * `timeout`, trim BullMQ history, and retry undelivered webhooks.
+ */
 import { and, eq, inArray, lte } from "drizzle-orm";
 
 import { db } from "../db/client";
 import { requests } from "../db/schema";
 import { cleanupQueueHistory } from "../queue/enqueue";
 import { toPublicStatus } from "../domain";
+import { retryUndeliveredWebhooks } from "./webhookService";
 
 const REQUEST_RETENTION_BATCH_SIZE = 1000;
 const RUNNING_RECONCILE_BUFFER_MS = 30 * 1000;
@@ -70,18 +76,25 @@ export async function runRetentionCycle(params: {
   stuckRunningReconciled: number;
   queueCompletedRemoved: number;
   queueFailedRemoved: number;
+  webhooksRetried: number;
 }> {
-  const [expiredRequestsRemoved, stuckRunningReconciled, queueCleanup] =
-    await Promise.all([
-      cleanupExpiredRequestsBatch(),
-      reconcileStuckRunningRequests(params),
-      cleanupQueueHistory(),
-    ]);
+  const [
+    expiredRequestsRemoved,
+    stuckRunningReconciled,
+    queueCleanup,
+    webhooksRetried,
+  ] = await Promise.all([
+    cleanupExpiredRequestsBatch(),
+    reconcileStuckRunningRequests(params),
+    cleanupQueueHistory(),
+    retryUndeliveredWebhooks(),
+  ]);
 
   return {
     expiredRequestsRemoved,
     stuckRunningReconciled,
     queueCompletedRemoved: queueCleanup.completedRemoved,
     queueFailedRemoved: queueCleanup.failedRemoved,
+    webhooksRetried,
   };
 }

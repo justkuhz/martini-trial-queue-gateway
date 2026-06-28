@@ -4,6 +4,7 @@ set -euo pipefail
 BASE_URL="${BASE_URL:-http://localhost:3000}"
 MODEL_PATH="${MODEL_PATH:-martini/image-fast}"
 PROMPT="${PROMPT:-a cinematic cat walking through New York at night}"
+AUTH_KEY="${AUTH_KEY:-test_key}"
 
 echo "Running smoke test against ${BASE_URL}"
 
@@ -11,6 +12,7 @@ READY_JSON="$(curl -sS "${BASE_URL}/readyz")"
 echo "readyz: ${READY_JSON}"
 
 SUBMIT_JSON="$(curl -sS -X POST "${BASE_URL}/v1/queue/${MODEL_PATH}" \
+  -H "Authorization: Key ${AUTH_KEY}" \
   -H "Content-Type: application/json" \
   -d "{\"prompt\":\"${PROMPT}\"}")"
 echo "submit: ${SUBMIT_JSON}"
@@ -26,7 +28,7 @@ echo "response_url: ${RESPONSE_URL}"
 echo "cancel_url: ${CANCEL_URL}"
 
 for _ in $(seq 1 30); do
-  STATUS_JSON="$(curl -sS "${STATUS_URL}?logs=1")"
+  STATUS_JSON="$(curl -sS "${STATUS_URL}?logs=1" -H "Authorization: Key ${AUTH_KEY}")"
   STATUS="$(node -e "const j=JSON.parse(process.argv[1]); process.stdout.write(j.status || 'UNKNOWN');" "${STATUS_JSON}")"
   echo "status: ${STATUS_JSON}"
   if [[ "${STATUS}" == "COMPLETED" ]]; then
@@ -36,7 +38,7 @@ for _ in $(seq 1 30); do
 done
 
 echo "response:"
-curl -sS "${RESPONSE_URL}"
+curl -sS "${RESPONSE_URL}" -H "Authorization: Key ${AUTH_KEY}"
 echo
 
 echo "smoke test completed"

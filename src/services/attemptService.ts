@@ -5,10 +5,23 @@ import { requestAttempts, requests } from "../db/schema";
 import type { AttemptStatus, ErrorType } from "../domain";
 import { createGatewayRequestId } from "../utils/ids";
 
+/**
+ * Tracks per-attempt execution rows. One request (stable request_id) can have
+ * many attempts; each attempt gets a fresh gateway_request_id and an
+ * incrementing attempt_number, giving retry/debug visibility that is distinct
+ * from the request's own identity.
+ */
+
+/**
+ * Opens a new attempt for a request: derives the next attempt_number, mints a
+ * fresh gateway_request_id, inserts the attempt row, and records it as the
+ * request's latest gateway id. Returns both for the worker to log and use.
+ */
 export async function startAttempt(params: {
   requestId: string;
   modelId: string;
 }): Promise<{ gatewayRequestId: string; attemptNumber: number }> {
+  // Next attempt number = highest existing for this request + 1 (starts at 1).
   const [latest] = await db
     .select({
       attemptNumber: requestAttempts.attemptNumber,

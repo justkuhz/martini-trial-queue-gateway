@@ -18,6 +18,11 @@ type StatusRow = {
     | null;
 };
 
+/**
+ * Builds the public status response for a request: always status + request_id +
+ * response_url, with logs attached only when requested, a live queue_position
+ * while IN_QUEUE, and metrics / error fields once COMPLETED.
+ */
 export async function buildRequestStatusPayload(params: {
   row: StatusRow;
   modelId: string;
@@ -44,9 +49,10 @@ export async function buildRequestStatusPayload(params: {
   }
 
   if (publicStatus === "COMPLETED") {
-    payload.metrics = params.row.inferenceTimeSeconds
-      ? { inference_time: params.row.inferenceTimeSeconds }
-      : undefined;
+    payload.metrics =
+      params.row.inferenceTimeSeconds != null
+        ? { inference_time: params.row.inferenceTimeSeconds }
+        : undefined;
     payload.error = params.row.error ?? undefined;
     payload.error_type = params.row.errorType ?? undefined;
   }
