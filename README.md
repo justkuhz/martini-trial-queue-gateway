@@ -109,6 +109,33 @@ Authorization: Key test_key
   - `401 Unauthorized`
   - `{ "error": "Unauthorized", "error_type": "authentication_error", ... }`
 
+Request headers:
+
+- Disable retry:
+
+```txt
+X-Fal-No-Retry: 1
+```
+
+When set, retryable failures are not retried (`attempts=1` for that request).
+
+- Queue priority:
+
+```txt
+X-Fal-Queue-Priority: normal
+X-Fal-Queue-Priority: low
+```
+
+Low-priority requests are enqueued behind normal priority requests.
+
+- Start timeout:
+
+```txt
+X-Fal-Request-Timeout: 30
+```
+
+Applied as queue wait timeout only. If a request waits too long before worker start, it completes with `timeout`. Once processing starts, this header does not limit inference runtime.
+
 Retention and expiry strategy:
 
 - Completed requests are retained with `expires_at` and cleaned in batches by a periodic retention cycle.
@@ -171,6 +198,9 @@ Coverage includes:
 - image submit -> status polling -> response retrieval lifecycle
 - cancel request acceptance behavior
 - auth failure behavior (`401` + `authentication_error`)
+- `X-Fal-No-Retry` behavior (retryable failure does not retry)
+- `X-Fal-Request-Timeout` behavior (fails before start when queue wait exceeds threshold)
+- `X-Fal-Queue-Priority` behavior (normal request starts before queued low-priority request)
 
 Verification coverage:
 

@@ -56,6 +56,23 @@ async function waitForCompletedStatus(
   throw new Error("Timed out waiting for COMPLETED status");
 }
 
+async function waitForStatus(
+  statusUrl: string,
+  expectedStatus: string,
+  timeoutMs = 60_000,
+): Promise<any> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const { body } = await fetchJson(`${statusUrl}?logs=1`);
+    if (body.status === expectedStatus) {
+      return body;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  throw new Error(`Timed out waiting for status ${expectedStatus}`);
+}
+
 async function getAttemptRows(requestId: string): Promise<
   Array<{ gateway_request_id: string; attempt_number: number }>
 > {
@@ -289,6 +306,113 @@ test("cancel request returns accepted status", async () => {
     cancel.body.status === "CANCELLATION_REQUESTED" ||
       cancel.body.status === "ALREADY_COMPLETED",
   );
+});
+
+test("X-Fal-No-Retry disables retryable retries", async () => {
+  const submit = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Fal-No-Retry": "1",
+    },
+    body: JSON.stringify({ prompt: "__force_retry_once no retry test prompt" }),
+  });
+
+  assert.equal(submit.status, 202);
+  const submitBody = submit.body as SubmitResponse;
+
+  const completed = await waitForCompletedStatus(submitBody.status_url);
+  assert.equal(completed.status, "COMPLETED");
+  assert.equal(completed.error_type, "runner_server_error");
+
+  const attempts = await getAttemptRows(submitBody.request_id);
+  assert.equal(attempts.length, 1);
+});
+
+test("X-Fal-Request-Timeout fails request before execution starts", async () => {
+  const occupiedA = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: "occupy worker slot A" }),
+  });
+  const occupiedB = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: "occupy worker slot B" }),
+  });
+  assert.equal(occupiedA.status, 202);
+  assert.equal(occupiedB.status, 202);
+
+  const timeoutSubmit = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Fal-Request-Timeout": "1",
+    },
+    body: JSON.stringify({ prompt: "start timeout validation prompt" }),
+  });
+  assert.equal(timeoutSubmit.status, 202);
+  const timeoutBody = timeoutSubmit.body as SubmitResponse;
+
+  const completed = await waitForCompletedStatus(timeoutBody.status_url);
+  assert.equal(completed.status, "COMPLETED");
+  assert.equal(completed.error_type, "timeout");
+});
+
+test("X-Fal-Queue-Priority low is processed after normal priority", async () => {
+  const low1 = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Fal-Queue-Priority": "low",
+    },
+    body: JSON.stringify({ prompt: "priority low 1" }),
+  });
+  const low2 = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Fal-Queue-Priority": "low",
+    },
+    body: JSON.stringify({ prompt: "priority low 2" }),
+  });
+  const low3 = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Fal-Queue-Priority": "low",
+    },
+    body: JSON.stringify({ prompt: "priority low 3" }),
+  });
+  const low4 = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Fal-Queue-Priority": "low",
+    },
+    body: JSON.stringify({ prompt: "priority low 4" }),
+  });
+  assert.equal(low1.status, 202);
+  assert.equal(low2.status, 202);
+  assert.equal(low3.status, 202);
+  assert.equal(low4.status, 202);
+
+  const normal = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Fal-Queue-Priority": "normal",
+    },
+    body: JSON.stringify({ prompt: "priority normal control request" }),
+  });
+  assert.equal(normal.status, 202);
+  const normalBody = normal.body as SubmitResponse;
+  const low4Body = low4.body as SubmitResponse;
+
+  await waitForStatus(normalBody.status_url, "IN_PROGRESS");
+  const low4Status = await fetchJson(low4Body.status_url);
+  assert.equal(low4Status.status, 200);
+  assert.equal(low4Status.body.status, "IN_QUEUE");
 });
 
 test("completion webhook delivers success payload", async () => {

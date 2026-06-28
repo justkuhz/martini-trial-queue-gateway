@@ -3,11 +3,17 @@ import "dotenv/config";
 import { Job, Queue } from "bullmq";
 
 import { env } from "../config/env";
-import { REQUEST_QUEUE_JOB_NAME, type QueueJobPayload } from "../domain";
+import {
+  REQUEST_QUEUE_JOB_NAME,
+  type QueueJobPayload,
+  type QueuePriority,
+} from "../domain";
 
 const queueConnection = {
   url: env.redisUrl,
 };
+
+export const DEFAULT_RETRY_ATTEMPTS = 10;
 
 export const requestQueue = new Queue<
   QueueJobPayload,
@@ -16,7 +22,7 @@ export const requestQueue = new Queue<
 >(env.queueName, {
   connection: queueConnection,
   defaultJobOptions: {
-    attempts: 10,
+    attempts: DEFAULT_RETRY_ATTEMPTS,
     backoff: {
       type: "exponential",
       delay: 1_000,
@@ -32,10 +38,34 @@ export const requestQueue = new Queue<
   },
 });
 
-export async function enqueueRequest(payload: QueueJobPayload): Promise<void> {
-  await requestQueue.add(REQUEST_QUEUE_JOB_NAME, payload, {
+const QUEUE_PRIORITY_VALUE: Record<QueuePriority, number> = {
+  normal: 1,
+  low: 10,
+};
+
+export async function enqueueRequest(
+  payload: QueueJobPayload,
+  options?: {
+    noRetry?: boolean;
+    priority?: QueuePriority;
+  },
+): Promise<void> {
+  const jobOptions: {
+    jobId: string;
+    attempts?: number;
+    priority: number;
+  } = {
     jobId: payload.requestId,
-  });
+    priority: options?.priority
+      ? QUEUE_PRIORITY_VALUE[options.priority]
+      : QUEUE_PRIORITY_VALUE.normal,
+  };
+
+  if (options?.noRetry) {
+    jobOptions.attempts = 1;
+  }
+
+  await requestQueue.add(REQUEST_QUEUE_JOB_NAME, payload, jobOptions);
 }
 
 async function getRequestJob(

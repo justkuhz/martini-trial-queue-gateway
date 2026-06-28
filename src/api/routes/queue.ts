@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 
 import { env } from "../../config/env";
 import type {
+  QueuePriority,
   RequestCancelResponse,
   RequestStatusResponse,
   SubmitRequestResponse,
@@ -69,6 +70,47 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const requestId = createRequestId();
+      const rawNoRetry = request.headers["x-fal-no-retry"];
+      const noRetryHeader = Array.isArray(rawNoRetry) ? rawNoRetry[0] : rawNoRetry;
+      const noRetry = noRetryHeader === "1";
+      if (noRetryHeader !== undefined && noRetryHeader !== "1") {
+        return reply.code(400).send({
+          error: "Invalid X-Fal-No-Retry header. Use: 1",
+          error_type: "bad_request",
+        });
+      }
+
+      const rawPriority = request.headers["x-fal-queue-priority"];
+      const priorityValue = Array.isArray(rawPriority) ? rawPriority[0] : rawPriority;
+      const queuePriority: QueuePriority =
+        priorityValue === "low" ? "low" : "normal";
+      if (
+        priorityValue !== undefined &&
+        priorityValue !== "normal" &&
+        priorityValue !== "low"
+      ) {
+        return reply.code(400).send({
+          error: "Invalid X-Fal-Queue-Priority header. Use: normal or low",
+          error_type: "bad_request",
+        });
+      }
+
+      const rawStartTimeout = request.headers["x-fal-request-timeout"];
+      const startTimeoutValue = Array.isArray(rawStartTimeout)
+        ? rawStartTimeout[0]
+        : rawStartTimeout;
+      let startTimeoutSeconds: number | undefined;
+      if (startTimeoutValue !== undefined) {
+        const parsed = Number(startTimeoutValue);
+        if (!Number.isInteger(parsed) || parsed <= 0) {
+          return reply.code(400).send({
+            error: "Invalid X-Fal-Request-Timeout header. Use positive integer seconds.",
+            error_type: "bad_request",
+          });
+        }
+        startTimeoutSeconds = parsed;
+      }
+
       let webhookUrl: string | undefined;
       if (request.query.fal_webhook) {
         try {
@@ -101,6 +143,10 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         requestId,
         modelId,
         input: parsedInput.data,
+        startTimeoutSeconds,
+      }, {
+        noRetry,
+        priority: queuePriority,
       });
 
       const queuePosition = await getQueuePosition(requestId);

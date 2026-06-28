@@ -7,6 +7,7 @@ import type { ModelRunContext, QueueJobPayload } from "../domain";
 import { toExecutionError } from "../domain";
 import { executeModelWithProviders } from "../models/executeModel";
 import { getModel } from "../models/registry";
+import { DEFAULT_RETRY_ATTEMPTS } from "../queue/enqueue";
 import { finishAttempt, startAttempt } from "../services/attemptService";
 import { appendLog } from "../services/logService";
 import { runRetentionCycle } from "../services/retentionService";
@@ -48,7 +49,7 @@ async function deliverCompletionWebhook(params: {
 const worker = new Worker<QueueJobPayload>(
   env.queueName,
   async (job) => {
-    const { requestId, modelId, input } = job.data;
+    const { requestId, modelId, input, startTimeoutSeconds } = job.data;
     const existingRequest = await getRequest(requestId, modelId);
     if (!existingRequest) {
       throw new UnrecoverableError(`Missing request row: ${requestId}`);
@@ -92,6 +93,31 @@ const worker = new Worker<QueueJobPayload>(
         errorType: "client_cancelled",
       });
       throw new UnrecoverableError("Request cancelled before processing.");
+    }
+
+    if (startTimeoutSeconds) {
+      const queueWaitMs = Date.now() - existingRequest.createdAt.getTime();
+      if (queueWaitMs > startTimeoutSeconds * 1000) {
+        await markCompletedIfNotCompleted({
+          requestId,
+          error: "Request timed out before starting execution.",
+          errorType: "timeout",
+          internalStatus: "timeout",
+          expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
+        });
+        await appendLog(
+          requestId,
+          `Request start timeout exceeded (${startTimeoutSeconds}s) while waiting in queue.`,
+        );
+        const fallbackGatewayRequestId = existingRequest.latestGatewayRequestId ?? "gwreq_unknown";
+        await deliverCompletionWebhook({
+          requestId,
+          gatewayRequestId: fallbackGatewayRequestId,
+          error: "Request timed out before starting execution.",
+          errorType: "timeout",
+        });
+        throw new UnrecoverableError("Start timeout exceeded before processing.");
+      }
     }
 
     // Conditional transition protects lifecycle integrity if BullMQ redelivers after crash.
@@ -182,7 +208,7 @@ const worker = new Worker<QueueJobPayload>(
         errorType: normalizedError.errorType,
       });
 
-      const maxAttempts = job.opts.attempts ?? 1;
+      const maxAttempts = job.opts.attempts ?? DEFAULT_RETRY_ATTEMPTS;
       const attemptsUsed = job.attemptsMade + 1;
       const hasRetryRemaining = normalizedError.retryable && attemptsUsed < maxAttempts;
 
