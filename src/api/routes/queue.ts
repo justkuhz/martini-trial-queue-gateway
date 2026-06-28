@@ -10,6 +10,7 @@ import type {
 import { buildRequestUrls, toPublicStatus } from "../../domain";
 import { getModel } from "../../models/registry";
 import {
+  QUEUE_PRIORITY_VALUE,
   enqueueRequest,
   hasActiveRequestJob,
   removeQueuedRequestJob,
@@ -153,6 +154,7 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         modelId,
         input: parsedInput.data,
         webhookUrl,
+        priority: QUEUE_PRIORITY_VALUE[queuePriority],
       });
       await appendLog(requestId, "Request accepted and queued.");
       await enqueueRequest({

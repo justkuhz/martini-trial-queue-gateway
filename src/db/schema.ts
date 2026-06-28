@@ -1,4 +1,5 @@
 import {
+  bigserial,
   boolean,
   doublePrecision,
   integer,
@@ -41,6 +42,10 @@ export const requests = pgTable(
     cancellationRequested: boolean("cancellation_requested")
       .notNull()
       .default(false),
+    // Lower value = higher priority (mirrors BullMQ: normal=1, low=10).
+    priority: integer("priority").notNull().default(1),
+    // Monotonic insertion order; used as the FIFO tiebreaker for queue position.
+    queueSeq: bigserial("queue_seq", { mode: "number" }).notNull(),
     inputJson: jsonb("input_json").notNull(),
     outputJson: jsonb("output_json"),
     error: text("error"),
@@ -63,6 +68,12 @@ export const requests = pgTable(
     ),
     createdAtIdx: index("requests_created_at_idx").on(table.createdAt),
     expiresAtIdx: index("requests_expires_at_idx").on(table.expiresAt),
+    // Supports O(log n) queue-position counting ordered by (priority, queueSeq).
+    queuePositionIdx: index("requests_queue_position_idx").on(
+      table.internalStatus,
+      table.priority,
+      table.queueSeq,
+    ),
     webhookDeliveredAtIdx: index("requests_webhook_delivered_at_idx").on(
       table.webhookDeliveredAt,
     ),

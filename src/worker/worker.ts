@@ -272,7 +272,8 @@ const retentionTimer = setInterval(() => {
       summary.expiredRequestsRemoved > 0 ||
       summary.stuckRunningReconciled > 0 ||
       summary.queueCompletedRemoved > 0 ||
-      summary.queueFailedRemoved > 0
+      summary.queueFailedRemoved > 0 ||
+      summary.webhooksRetried > 0
     ) {
       // eslint-disable-next-line no-console
       console.log("Retention cycle summary", summary);

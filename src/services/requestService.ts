@@ -9,12 +9,14 @@ export async function createRequest(params: {
   modelId: string;
   input: Record<string, unknown>;
   webhookUrl?: string;
+  priority?: number;
 }): Promise<void> {
   await db.insert(requests).values({
     requestId: params.requestId,
     modelId: params.modelId,
     status: toPublicStatus("queued"),
     internalStatus: "queued",
+    priority: params.priority ?? 1,
     inputJson: params.input,
     webhookUrl: params.webhookUrl,
   });
@@ -38,17 +40,6 @@ export async function markCancellationRequested(
     .where(eq(requests.requestId, requestId));
 }
 
-export async function markInProgress(requestId: string): Promise<void> {
-  await db
-    .update(requests)
-    .set({
-      status: toPublicStatus("running"),
-      internalStatus: "running",
-      startedAt: new Date(),
-    })
-    .where(eq(requests.requestId, requestId));
-}
-
 export async function markInProgressIfNotCompleted(
   requestId: string,
 ): Promise<boolean> {
@@ -64,31 +55,6 @@ export async function markInProgressIfNotCompleted(
     .returning({ requestId: requests.requestId });
 
   return updatedRows.length > 0;
-}
-
-export async function markCompleted(params: {
-  requestId: string;
-  output?: Record<string, unknown>;
-  error?: string;
-  errorType?: ErrorType;
-  internalStatus?: InternalRequestStatus;
-  inferenceTimeSeconds?: number;
-  expiresAt?: Date;
-}): Promise<void> {
-  const internalStatus = params.internalStatus ?? "succeeded";
-  await db
-    .update(requests)
-    .set({
-      status: toPublicStatus(internalStatus),
-      internalStatus,
-      outputJson: params.output,
-      error: params.error,
-      errorType: params.errorType,
-      inferenceTimeSeconds: params.inferenceTimeSeconds,
-      completedAt: new Date(),
-      expiresAt: params.expiresAt,
-    })
-    .where(eq(requests.requestId, params.requestId));
 }
 
 export async function markCompletedIfNotCompleted(params: {

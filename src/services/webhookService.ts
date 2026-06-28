@@ -18,10 +18,15 @@ type WebhookDeliveryResult = {
   error?: string;
 };
 
+const WEBHOOK_RETRY_BATCH_SIZE = 100;
+
 async function claimWebhookTarget(
   requestId: string,
 ): Promise<{ webhookUrl: string } | null> {
-  // Claim-first prevents duplicate sends when workers race/recover.
+  // Claim-first prevents duplicate sends when workers race/recover. The claim is
+  // released again (webhook_delivered_at -> null) if delivery fails, so a later
+  // retention sweep can re-claim and retry. This gives at-least-once delivery
+  // while keeping the happy path exactly-once.
   const claimedRows = await db
     .update(requests)
     .set({
@@ -46,6 +51,14 @@ async function claimWebhookTarget(
   return {
     webhookUrl: row.webhookUrl,
   };
+}
+
+async function releaseWebhookClaim(requestId: string): Promise<void> {
+  // Re-open the request for a future delivery attempt.
+  await db
+    .update(requests)
+    .set({ webhookDeliveredAt: null })
+    .where(eq(requests.requestId, requestId));
 }
 
 export async function sendCompletionWebhook(
@@ -96,6 +109,8 @@ export async function sendCompletionWebhook(
     });
 
     if (!response.ok) {
+      // Release so the retention sweep retries later.
+      await releaseWebhookClaim(params.requestId);
       return {
         delivered: false,
         reason: "delivery_failed",
@@ -108,6 +123,7 @@ export async function sendCompletionWebhook(
       reason: "delivered",
     };
   } catch (error) {
+    await releaseWebhookClaim(params.requestId);
     return {
       delivered: false,
       reason: "delivery_failed",
@@ -116,3 +132,48 @@ export async function sendCompletionWebhook(
   }
 }
 
+/**
+ * Best-effort retry sweep for completed requests whose webhook has not yet been
+ * delivered (e.g. the receiver was down at completion time, or the worker
+ * crashed after marking COMPLETED but before delivering). Reconstructs the
+ * payload from the persisted request row and re-attempts delivery. Idempotent:
+ * `sendCompletionWebhook` re-claims atomically, and the `Idempotency-Key`
+ * header lets receivers dedupe.
+ */
+export async function retryUndeliveredWebhooks(
+  batchSize = WEBHOOK_RETRY_BATCH_SIZE,
+): Promise<number> {
+  const pending = await db
+    .select({
+      requestId: requests.requestId,
+      gatewayRequestId: requests.latestGatewayRequestId,
+      output: requests.outputJson,
+      error: requests.error,
+      errorType: requests.errorType,
+    })
+    .from(requests)
+    .where(
+      and(
+        eq(requests.status, "COMPLETED"),
+        isNotNull(requests.webhookUrl),
+        isNull(requests.webhookDeliveredAt),
+      ),
+    )
+    .limit(batchSize);
+
+  let delivered = 0;
+  for (const row of pending) {
+    const result = await sendCompletionWebhook({
+      requestId: row.requestId,
+      gatewayRequestId: row.gatewayRequestId ?? "gwreq_unknown",
+      output: (row.output as Record<string, unknown> | null) ?? undefined,
+      error: row.error ?? undefined,
+      errorType: row.errorType ?? undefined,
+    });
+    if (result.reason === "delivered") {
+      delivered += 1;
+    }
+  }
+
+  return delivered;
+}

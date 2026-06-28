@@ -38,7 +38,7 @@ export const requestQueue = new Queue<
   },
 });
 
-const QUEUE_PRIORITY_VALUE: Record<QueuePriority, number> = {
+export const QUEUE_PRIORITY_VALUE: Record<QueuePriority, number> = {
   normal: 1,
   low: 10,
 };

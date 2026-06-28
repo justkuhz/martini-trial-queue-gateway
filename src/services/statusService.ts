@@ -44,9 +44,10 @@ export async function buildRequestStatusPayload(params: {
   }
 
   if (publicStatus === "COMPLETED") {
-    payload.metrics = params.row.inferenceTimeSeconds
-      ? { inference_time: params.row.inferenceTimeSeconds }
-      : undefined;
+    payload.metrics =
+      params.row.inferenceTimeSeconds != null
+        ? { inference_time: params.row.inferenceTimeSeconds }
+        : undefined;
     payload.error = params.row.error ?? undefined;
     payload.error_type = params.row.errorType ?? undefined;
   }
