@@ -84,6 +84,19 @@ Model mocks and response behavior:
   - Returns `409` with a clear `"Response not ready yet."` error when request is still `IN_QUEUE` or `IN_PROGRESS`.
   - Returns `422` with `error` and `error_type` when request completed with an execution error.
 
+Completion webhooks:
+
+- Submit supports optional webhook query parameter:
+
+```txt
+POST /v1/queue/:model_id?fal_webhook=https://example.com/webhook
+```
+
+- On completion, service sends:
+  - success payload: `{ request_id, gateway_request_id, status: "OK", payload: <model response> }`
+  - error payload: `{ request_id, gateway_request_id, status: "ERROR", error, payload: { detail: error_type } }`
+- Delivery includes `Idempotency-Key: <request_id>` and is idempotent by `request_id`.
+
 Retention and expiry strategy:
 
 - Completed requests are retained with `expires_at` and cleaned in batches by a periodic retention cycle.
@@ -156,3 +169,4 @@ Verification coverage:
   - same `request_id` is preserved
   - new `gateway_request_id` is created per attempt
 - Provider fallback behavior validated in unit tests for `executeModelWithProviders`.
+- Completion webhook success/error payloads validated via integration tests using a local webhook receiver.

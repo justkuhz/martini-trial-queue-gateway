@@ -38,7 +38,11 @@ function toModelId(params: ModelParams): string {
 }
 
 export const queueRoutes: FastifyPluginAsync = async (app) => {
-  app.post<{ Params: ModelParams; Body: Record<string, unknown> }>(
+  app.post<{
+    Params: ModelParams;
+    Body: Record<string, unknown>;
+    Querystring: { fal_webhook?: string };
+  }>(
     "/v1/queue/:modelOwner/:modelName",
     async (request, reply) => {
       const modelId = toModelId(request.params);
@@ -50,6 +54,18 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const requestId = createRequestId();
+      let webhookUrl: string | undefined;
+      if (request.query.fal_webhook) {
+        try {
+          webhookUrl = new URL(request.query.fal_webhook).toString();
+        } catch {
+          return reply.code(400).send({
+            error: "Invalid fal_webhook URL.",
+            error_type: "bad_request",
+          });
+        }
+      }
+
       const parsedInput = model.inputSchema.safeParse(request.body ?? {});
       if (!parsedInput.success) {
         return reply.code(400).send({
@@ -63,6 +79,7 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         requestId,
         modelId,
         input: parsedInput.data,
+        webhookUrl,
       });
       await appendLog(requestId, "Request accepted and queued.");
       await enqueueRequest({

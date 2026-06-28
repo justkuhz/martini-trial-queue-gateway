@@ -8,6 +8,7 @@ export async function createRequest(params: {
   requestId: string;
   modelId: string;
   input: Record<string, unknown>;
+  webhookUrl?: string;
 }): Promise<void> {
   await db.insert(requests).values({
     requestId: params.requestId,
@@ -15,6 +16,7 @@ export async function createRequest(params: {
     status: toPublicStatus("queued"),
     internalStatus: "queued",
     inputJson: params.input,
+    webhookUrl: params.webhookUrl,
   });
 }
 

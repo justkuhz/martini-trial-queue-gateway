@@ -48,6 +48,7 @@ export const requests = pgTable(
     inferenceTimeSeconds: doublePrecision("inference_time_seconds"),
     latestGatewayRequestId: text("latest_gateway_request_id"),
     webhookUrl: text("webhook_url"),
+    webhookDeliveredAt: timestamp("webhook_delivered_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -62,6 +63,9 @@ export const requests = pgTable(
     ),
     createdAtIdx: index("requests_created_at_idx").on(table.createdAt),
     expiresAtIdx: index("requests_expires_at_idx").on(table.expiresAt),
+    webhookDeliveredAtIdx: index("requests_webhook_delivered_at_idx").on(
+      table.webhookDeliveredAt,
+    ),
     modelAndRequestIdx: index("requests_model_request_idx").on(
       table.modelId,
       table.requestId,

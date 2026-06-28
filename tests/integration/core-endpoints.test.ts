@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import test from "node:test";
 import { Client } from "pg";
 
@@ -14,6 +15,12 @@ type SubmitResponse = {
   status_url: string;
   response_url: string;
   cancel_url: string;
+};
+
+type CapturedWebhook = {
+  path: string;
+  body: any;
+  headers: http.IncomingHttpHeaders;
 };
 
 async function fetchJson(
@@ -82,6 +89,57 @@ async function readSseUntilCompleted(url: string): Promise<string> {
   }
 
   throw new Error("Timed out waiting for COMPLETED stream event");
+}
+
+async function createWebhookReceiver() {
+  const captured: CapturedWebhook[] = [];
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    req.on("end", () => {
+      const rawBody = Buffer.concat(chunks).toString("utf8");
+      captured.push({
+        path: req.url ?? "",
+        body: rawBody ? JSON.parse(rawBody) : {},
+        headers: req.headers,
+      });
+      res.statusCode = 200;
+      res.end("ok");
+    });
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Unable to determine webhook receiver address");
+  }
+
+  const baseUrl = `http://127.0.0.1:${address.port}/webhook`;
+  const close = async () =>
+    new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+
+  const waitForRequest = async (
+    predicate: (item: CapturedWebhook) => boolean,
+    timeoutMs = 60_000,
+  ) => {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const match = captured.find(predicate);
+      if (match) {
+        return match;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error("Timed out waiting for webhook request");
+  };
+
+  const getCaptured = () => captured.slice();
+  return { baseUrl, close, waitForRequest, getCaptured };
 }
 
 test("readyz responds with dependency health", async () => {
@@ -204,4 +262,74 @@ test("cancel request returns accepted status", async () => {
     cancel.body.status === "CANCELLATION_REQUESTED" ||
       cancel.body.status === "ALREADY_COMPLETED",
   );
+});
+
+test("completion webhook delivers success payload", async () => {
+  const webhookReceiver = await createWebhookReceiver();
+  try {
+    const submit = await fetchJson(
+      `${BASE_URL}/v1/queue/${IMAGE_MODEL}?fal_webhook=${encodeURIComponent(webhookReceiver.baseUrl)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: "integration test webhook success prompt" }),
+      },
+    );
+
+    assert.equal(submit.status, 202);
+    const submitBody = submit.body as SubmitResponse;
+    await waitForCompletedStatus(submitBody.status_url);
+
+    const webhookRequest = await webhookReceiver.waitForRequest(
+      (item) => item.body.request_id === submitBody.request_id,
+    );
+    assert.equal(webhookRequest.body.status, "OK");
+    assert.equal(webhookRequest.body.request_id, submitBody.request_id);
+    assert.ok(typeof webhookRequest.body.gateway_request_id === "string");
+    assert.ok(Array.isArray(webhookRequest.body.payload.images));
+    assert.ok(
+      webhookRequest.headers["idempotency-key"] === submitBody.request_id,
+    );
+    // Delivery is idempotent by request_id: we expect a single webhook event per request.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const deliveriesForRequest = webhookReceiver
+      .getCaptured()
+      .filter((item) => item.body.request_id === submitBody.request_id);
+    assert.equal(deliveriesForRequest.length, 1);
+  } finally {
+    await webhookReceiver.close();
+  }
+});
+
+test("completion webhook delivers error payload", async () => {
+  const webhookReceiver = await createWebhookReceiver();
+  try {
+    const submit = await fetchJson(
+      `${BASE_URL}/v1/queue/${IMAGE_MODEL}?fal_webhook=${encodeURIComponent(webhookReceiver.baseUrl)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: "__force_bad_request integration test webhook error prompt",
+        }),
+      },
+    );
+
+    assert.equal(submit.status, 202);
+    const submitBody = submit.body as SubmitResponse;
+    const status = await waitForCompletedStatus(submitBody.status_url);
+    assert.equal(status.status, "COMPLETED");
+    assert.equal(status.error_type, "bad_request");
+
+    const webhookRequest = await webhookReceiver.waitForRequest(
+      (item) => item.body.request_id === submitBody.request_id,
+    );
+    assert.equal(webhookRequest.body.status, "ERROR");
+    assert.equal(webhookRequest.body.request_id, submitBody.request_id);
+    assert.equal(webhookRequest.body.payload.detail, "bad_request");
+    assert.ok(typeof webhookRequest.body.gateway_request_id === "string");
+    assert.ok(typeof webhookRequest.body.error === "string");
+  } finally {
+    await webhookReceiver.close();
+  }
 });

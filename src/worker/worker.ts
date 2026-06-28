@@ -15,10 +15,35 @@ import {
   markCompletedIfNotCompleted,
   markInProgressIfNotCompleted,
 } from "../services/requestService";
+import { sendCompletionWebhook } from "../services/webhookService";
 
 const REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RETENTION_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_RUNNING_SECONDS_BEFORE_RECONCILE = 10 * 60;
+
+async function deliverCompletionWebhook(params: {
+  requestId: string;
+  gatewayRequestId: string;
+  output?: Record<string, unknown>;
+  error?: string;
+  errorType?:
+    | "runner_server_error"
+    | "runner_connection_error"
+    | "timeout"
+    | "bad_request"
+    | "internal_error"
+    | "client_cancelled";
+}): Promise<void> {
+  const result = await sendCompletionWebhook(params);
+  if (result.reason === "delivered") {
+    await appendLog(params.requestId, "Completion webhook delivered.");
+  } else if (result.reason === "delivery_failed") {
+    await appendLog(
+      params.requestId,
+      `Completion webhook delivery failed: ${result.error ?? "unknown error"}`,
+    );
+  }
+}
 
 const worker = new Worker<QueueJobPayload>(
   env.queueName,
@@ -41,6 +66,13 @@ const worker = new Worker<QueueJobPayload>(
         internalStatus: "failed",
         expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
       });
+      const fallbackGatewayRequestId = existingRequest.latestGatewayRequestId ?? "gwreq_unknown";
+      await deliverCompletionWebhook({
+        requestId,
+        gatewayRequestId: fallbackGatewayRequestId,
+        error: `Unknown model: ${modelId}`,
+        errorType: "bad_request",
+      });
       throw new UnrecoverableError(`Unknown model: ${modelId}`);
     }
     if (existingRequest?.cancellationRequested) {
@@ -52,6 +84,13 @@ const worker = new Worker<QueueJobPayload>(
         expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
       });
       await appendLog(requestId, "Request cancelled before processing started.");
+      const fallbackGatewayRequestId = existingRequest.latestGatewayRequestId ?? "gwreq_unknown";
+      await deliverCompletionWebhook({
+        requestId,
+        gatewayRequestId: fallbackGatewayRequestId,
+        error: "Request was cancelled by the client.",
+        errorType: "client_cancelled",
+      });
       throw new UnrecoverableError("Request cancelled before processing.");
     }
 
@@ -123,6 +162,11 @@ const worker = new Worker<QueueJobPayload>(
         expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
       });
       await appendLog(requestId, "Request completed successfully.");
+      await deliverCompletionWebhook({
+        requestId,
+        gatewayRequestId,
+        output: result.output,
+      });
     } catch (error) {
       clearTimeout(timeoutHandle);
       if (error instanceof UnrecoverableError) {
@@ -161,6 +205,12 @@ const worker = new Worker<QueueJobPayload>(
         expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
       });
       await appendLog(requestId, `Request failed: ${normalizedError.message}`);
+      await deliverCompletionWebhook({
+        requestId,
+        gatewayRequestId,
+        error: normalizedError.message,
+        errorType: normalizedError.errorType,
+      });
 
       throw new UnrecoverableError(normalizedError.message);
     }
