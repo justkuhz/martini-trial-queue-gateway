@@ -25,6 +25,13 @@ export const mockVideoFastPrimaryProvider: ModelProviderAdapter = {
       );
     }
 
+    if (prompt.includes("__force_primary_failure")) {
+      throw new ModelExecutionError(
+        "Forced primary provider failure for fallback testing.",
+        "runner_server_error",
+      );
+    }
+
     // Intentionally fail sometimes to exercise retry behavior.
     if (Math.random() < 0.25) {
       throw new ModelExecutionError(

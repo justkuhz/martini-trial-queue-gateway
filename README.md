@@ -136,6 +136,14 @@ X-Fal-Request-Timeout: 30
 
 Applied as queue wait timeout only. If a request waits too long before worker start, it completes with `timeout`. Once processing starts, this header does not limit inference runtime.
 
+- Disable fallback:
+
+```txt
+x-app-fal-disable-fallback: true
+```
+
+When set to `true`, worker executes only the primary provider and skips fallback providers.
+
 Retention and expiry strategy:
 
 - Completed requests are retained with `expires_at` and cleaned in batches by a periodic retention cycle.
@@ -201,6 +209,9 @@ Coverage includes:
 - `X-Fal-No-Retry` behavior (retryable failure does not retry)
 - `X-Fal-Request-Timeout` behavior (fails before start when queue wait exceeds threshold)
 - `X-Fal-Queue-Priority` behavior (normal request starts before queued low-priority request)
+- Fallback routing behavior:
+  - fallback succeeds when primary fails
+  - `x-app-fal-disable-fallback: true` disables fallback and surfaces primary failure
 
 Verification coverage:
 

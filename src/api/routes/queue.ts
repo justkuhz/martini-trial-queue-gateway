@@ -111,6 +111,22 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         startTimeoutSeconds = parsed;
       }
 
+      const rawDisableFallback = request.headers["x-app-fal-disable-fallback"];
+      const disableFallbackHeader = Array.isArray(rawDisableFallback)
+        ? rawDisableFallback[0]
+        : rawDisableFallback;
+      const disableFallback = disableFallbackHeader === "true";
+      if (
+        disableFallbackHeader !== undefined &&
+        disableFallbackHeader !== "true" &&
+        disableFallbackHeader !== "false"
+      ) {
+        return reply.code(400).send({
+          error: "Invalid x-app-fal-disable-fallback header. Use: true or false",
+          error_type: "bad_request",
+        });
+      }
+
       let webhookUrl: string | undefined;
       if (request.query.fal_webhook) {
         try {
@@ -144,6 +160,7 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         modelId,
         input: parsedInput.data,
         startTimeoutSeconds,
+        disableFallback,
       }, {
         noRetry,
         priority: queuePriority,

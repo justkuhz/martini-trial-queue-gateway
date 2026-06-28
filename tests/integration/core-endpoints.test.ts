@@ -415,6 +415,45 @@ test("X-Fal-Queue-Priority low is processed after normal priority", async () => 
   assert.equal(low4Status.body.status, "IN_QUEUE");
 });
 
+test("fallback provider succeeds when primary fails", async () => {
+  const submit = await fetchJson(`${BASE_URL}/v1/queue/${VIDEO_MODEL}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Fal-No-Retry": "1",
+    },
+    body: JSON.stringify({ prompt: "__force_primary_failure fallback enabled prompt" }),
+  });
+
+  assert.equal(submit.status, 202);
+  const submitBody = submit.body as SubmitResponse;
+  const completed = await waitForCompletedStatus(submitBody.status_url);
+  assert.equal(completed.status, "COMPLETED");
+  assert.equal(completed.error_type, undefined);
+
+  const response = await fetchJson(submitBody.response_url);
+  assert.equal(response.status, 200);
+  assert.equal(response.body.video.content_type, "video/mp4");
+});
+
+test("x-app-fal-disable-fallback=true disables provider fallback", async () => {
+  const submit = await fetchJson(`${BASE_URL}/v1/queue/${VIDEO_MODEL}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Fal-No-Retry": "1",
+      "x-app-fal-disable-fallback": "true",
+    },
+    body: JSON.stringify({ prompt: "__force_primary_failure fallback disabled prompt" }),
+  });
+
+  assert.equal(submit.status, 202);
+  const submitBody = submit.body as SubmitResponse;
+  const completed = await waitForCompletedStatus(submitBody.status_url);
+  assert.equal(completed.status, "COMPLETED");
+  assert.equal(completed.error_type, "runner_server_error");
+});
+
 test("completion webhook delivers success payload", async () => {
   const webhookReceiver = await createWebhookReceiver();
   try {

@@ -11,6 +11,9 @@ export async function executeModelWithProviders(
   model: RegisteredModel,
   input: Record<string, unknown>,
   context: ModelRunContext,
+  options?: {
+    disableFallback?: boolean;
+  },
 ): Promise<ModelRunResult> {
   let lastError: unknown;
 
@@ -26,7 +29,8 @@ export async function executeModelWithProviders(
         `Provider ${provider.providerId} failed (${normalized.errorType}).`,
       );
 
-      const isLastProvider = index === model.providers.length - 1;
+      const isLastProvider =
+        options?.disableFallback || index === model.providers.length - 1;
       if (isLastProvider || !isRetryableErrorType(normalized.errorType)) {
         throw error;
       }

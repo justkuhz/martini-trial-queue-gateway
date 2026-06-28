@@ -49,7 +49,7 @@ async function deliverCompletionWebhook(params: {
 const worker = new Worker<QueueJobPayload>(
   env.queueName,
   async (job) => {
-    const { requestId, modelId, input, startTimeoutSeconds } = job.data;
+    const { requestId, modelId, input, startTimeoutSeconds, disableFallback } = job.data;
     const existingRequest = await getRequest(requestId, modelId);
     if (!existingRequest) {
       throw new UnrecoverableError(`Missing request row: ${requestId}`);
@@ -150,7 +150,9 @@ const worker = new Worker<QueueJobPayload>(
           await appendLog(requestId, message);
         },
       };
-      const result = await executeModelWithProviders(model, input, runContext);
+      const result = await executeModelWithProviders(model, input, runContext, {
+        disableFallback,
+      });
       clearTimeout(timeoutHandle);
       await appendLog(requestId, "Done.");
 
