@@ -97,6 +97,18 @@ POST /v1/queue/:model_id?fal_webhook=https://example.com/webhook
   - error payload: `{ request_id, gateway_request_id, status: "ERROR", error, payload: { detail: error_type } }`
 - Delivery includes `Idempotency-Key: <request_id>` and is idempotent by `request_id`.
 
+Auth:
+
+- Queue endpoints use fal-like auth with a hardcoded local key:
+
+```txt
+Authorization: Key test_key
+```
+
+- On auth failure, API returns:
+  - `401 Unauthorized`
+  - `{ "error": "Unauthorized", "error_type": "authentication_error", ... }`
+
 Retention and expiry strategy:
 
 - Completed requests are retained with `expires_at` and cleaned in batches by a periodic retention cycle.
@@ -158,6 +170,7 @@ Coverage includes:
 - readiness check (`/readyz`)
 - image submit -> status polling -> response retrieval lifecycle
 - cancel request acceptance behavior
+- auth failure behavior (`401` + `authentication_error`)
 
 Verification coverage:
 

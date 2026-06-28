@@ -33,11 +33,26 @@ type RequestParams = ModelParams & {
   requestId: string;
 };
 
+const LOCAL_TEST_API_KEY = "test_key";
+
 function toModelId(params: ModelParams): string {
   return `${params.modelOwner}/${params.modelName}`;
 }
 
 export const queueRoutes: FastifyPluginAsync = async (app) => {
+  app.addHook("onRequest", async (request, reply) => {
+    const authHeader = request.headers.authorization;
+    const expectedHeader = `Key ${LOCAL_TEST_API_KEY}`;
+
+    if (authHeader !== expectedHeader) {
+      return reply.code(401).send({
+        error: "Unauthorized",
+        error_type: "authentication_error",
+        detail: `Expected Authorization header format: ${expectedHeader}`,
+      });
+    }
+  });
+
   app.post<{
     Params: ModelParams;
     Body: Record<string, unknown>;

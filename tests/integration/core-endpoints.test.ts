@@ -4,6 +4,7 @@ import test from "node:test";
 import { Client } from "pg";
 
 const BASE_URL = process.env.BASE_URL ?? "http://localhost:3000";
+const AUTH_KEY = process.env.AUTH_KEY ?? "test_key";
 const DATABASE_URL =
   process.env.DATABASE_URL ??
   "postgresql://postgres:postgres@localhost:5433/martini_queue";
@@ -27,7 +28,14 @@ async function fetchJson(
   url: string,
   init?: RequestInit,
 ): Promise<{ status: number; body: any }> {
-  const response = await fetch(url, init);
+  const headers = new Headers(init?.headers);
+  if (!headers.has("authorization")) {
+    headers.set("Authorization", `Key ${AUTH_KEY}`);
+  }
+  const response = await fetch(url, {
+    ...init,
+    headers,
+  });
   const body = await response.json();
   return { status: response.status, body };
 }
@@ -68,7 +76,11 @@ async function getAttemptRows(requestId: string): Promise<
 }
 
 async function readSseUntilCompleted(url: string): Promise<string> {
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Key ${AUTH_KEY}`,
+    },
+  });
   assert.equal(response.status, 200);
   assert.ok(response.body);
 
@@ -148,6 +160,21 @@ test("readyz responds with dependency health", async () => {
   assert.equal(body.ok, true);
   assert.equal(body.dependencies.db, "up");
   assert.equal(body.dependencies.queue, "up");
+});
+
+test("auth failure returns 401 with authentication error details", async () => {
+  const { status, body } = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Key wrong_key",
+    },
+    body: JSON.stringify({ prompt: "auth failure test prompt" }),
+  });
+
+  assert.equal(status, 401);
+  assert.equal(body.error, "Unauthorized");
+  assert.equal(body.error_type, "authentication_error");
 });
 
 test("image submit -> status -> response lifecycle", async () => {
