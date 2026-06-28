@@ -13,11 +13,12 @@ import "dotenv/config";
 import { UnrecoverableError, Worker } from "bullmq";
 
 import { env } from "../config/env";
+import { closeDb } from "../db/client";
 import type { ModelRunContext, QueueJobPayload } from "../domain";
 import { toExecutionError } from "../domain";
 import { executeModelWithProviders } from "../models/executeModel";
 import { getModel } from "../models/registry";
-import { DEFAULT_RETRY_ATTEMPTS } from "../queue/enqueue";
+import { DEFAULT_RETRY_ATTEMPTS, closeQueue } from "../queue/enqueue";
 import { finishAttempt, startAttempt } from "../services/attemptService";
 import { appendLog } from "../services/logService";
 import { runRetentionCycle } from "../services/retentionService";
@@ -295,9 +296,33 @@ const retentionTimer = setInterval(() => {
 }, RETENTION_INTERVAL_MS);
 retentionTimer.unref();
 
-process.on("SIGINT", async () => {
+/**
+ * Graceful shutdown on SIGTERM (sent by Docker/Kubernetes) and SIGINT (Ctrl-C).
+ * Stops the retention timer, then `worker.close()` waits for in-flight jobs to
+ * finish before releasing the queue and DB connections, so a deploy/restart
+ * never abandons a job mid-execution. Guarded so repeated signals are no-ops.
+ */
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  // eslint-disable-next-line no-console
+  console.log(`Received ${signal}, draining worker...`);
   clearInterval(retentionTimer);
-  await worker.close();
+  try {
+    await worker.close(); // waits for active jobs to complete
+    await closeQueue();
+    await closeDb();
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("Error during worker shutdown", error);
+    process.exit(1);
+  }
   process.exit(0);
-});
+}
+
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
 

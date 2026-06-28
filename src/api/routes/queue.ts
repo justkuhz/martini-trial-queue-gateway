@@ -359,9 +359,10 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
+      // A terminal request can no longer be cancelled (spec: 400 Bad Request).
       const publicStatus = toPublicStatus(row.internalStatus);
       if (publicStatus === "COMPLETED") {
-        return reply.send({
+        return reply.code(400).send({
           status: "ALREADY_COMPLETED",
           request_id: row.requestId,
         });
@@ -393,11 +394,12 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         );
       }
 
+      // Cancellation is acknowledged asynchronously (spec: 202 Accepted).
       const response: RequestCancelResponse = {
         status: "CANCELLATION_REQUESTED",
         request_id: row.requestId,
       };
-      return reply.send(response);
+      return reply.code(202).send(response);
     },
   );
 };

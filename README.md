@@ -212,7 +212,7 @@ curl -X PUT -H "Authorization: Key test_key" \
 | State | HTTP | Body |
 |---|---|---|
 | Queued or in progress | `202` | `{ "status": "CANCELLATION_REQUESTED" }` |
-| Already completed | `200` | `{ "status": "ALREADY_COMPLETED" }` |
+| Already completed | `400` | `{ "status": "ALREADY_COMPLETED" }` |
 | Unknown | `404` | `{ "status": "NOT_FOUND" }` |
 
 If queued, the job is removed from Redis and never runs. If in progress, a
@@ -265,6 +265,9 @@ On completion the gateway POSTs a success (`status: "OK"`) or error
   reconciling stuck `running` rows to `timeout`, trimming BullMQ history, and
   retrying undelivered webhooks.
 - `/readyz` dependency health check; API fails fast at startup if DB/Redis are down.
+- Graceful shutdown: both the API and worker handle `SIGTERM`/`SIGINT` by draining
+  in-flight HTTP requests / jobs before closing the queue and DB connections, so a
+  deploy or restart never abandons work mid-flight.
 
 ---
 

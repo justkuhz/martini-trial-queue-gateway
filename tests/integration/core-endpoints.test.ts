@@ -207,11 +207,13 @@ test("example curl command flow succeeds with auth header", async () => {
   assert.ok(Array.isArray(response.body.images));
 
   const cancel = await fetchJson(submitBody.cancel_url, { method: "PUT" });
-  assert.equal(cancel.status, 200);
-  assert.ok(
-    cancel.body.status === "CANCELLATION_REQUESTED" ||
-      cancel.body.status === "ALREADY_COMPLETED",
-  );
+  // 202 when accepted, 400 when the request already completed (race-dependent).
+  if (cancel.body.status === "CANCELLATION_REQUESTED") {
+    assert.equal(cancel.status, 202);
+  } else {
+    assert.equal(cancel.body.status, "ALREADY_COMPLETED");
+    assert.equal(cancel.status, 400);
+  }
 
   const webhookSubmit = await fetchJson(
     `${BASE_URL}/v1/queue/${IMAGE_MODEL}?fal_webhook=https://example.com/webhook`,
@@ -346,11 +348,72 @@ test("cancel request returns accepted status", async () => {
   assert.equal(submit.status, 202);
   const submitBody = submit.body as SubmitResponse;
   const cancel = await fetchJson(submitBody.cancel_url, { method: "PUT" });
-  assert.equal(cancel.status, 200);
-  assert.ok(
-    cancel.body.status === "CANCELLATION_REQUESTED" ||
-      cancel.body.status === "ALREADY_COMPLETED",
-  );
+  // 202 when accepted, 400 when the request already completed (race-dependent).
+  if (cancel.body.status === "CANCELLATION_REQUESTED") {
+    assert.equal(cancel.status, 202);
+  } else {
+    assert.equal(cancel.body.status, "ALREADY_COMPLETED");
+    assert.equal(cancel.status, 400);
+  }
+});
+
+test("cancelling a queued request removes it and never processes it", async () => {
+  // Occupy both worker slots so the target stays IN_QUEUE long enough to cancel.
+  // Assumes a single worker with concurrency 2 (like the priority/timeout tests).
+  await fetchJson(`${BASE_URL}/v1/queue/${VIDEO_MODEL}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: "occupy slot A for queued-cancel test" }),
+  });
+  await fetchJson(`${BASE_URL}/v1/queue/${VIDEO_MODEL}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: "occupy slot B for queued-cancel test" }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  const submit = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: "queued cancel target" }),
+  });
+  assert.equal(submit.status, 202);
+  const submitBody = submit.body as SubmitResponse;
+
+  const beforeCancel = await fetchJson(submitBody.status_url);
+  assert.equal(beforeCancel.body.status, "IN_QUEUE");
+
+  const cancel = await fetchJson(submitBody.cancel_url, { method: "PUT" });
+  assert.equal(cancel.status, 202);
+  assert.equal(cancel.body.status, "CANCELLATION_REQUESTED");
+
+  const completed = await waitForCompletedStatus(submitBody.status_url);
+  assert.equal(completed.status, "COMPLETED");
+  assert.equal(completed.error_type, "client_cancelled");
+
+  // "Never processed": no execution attempt row was ever created for it.
+  const attempts = await getAttemptRows(submitBody.request_id);
+  assert.equal(attempts.length, 0);
+});
+
+test("response endpoint returns 422 when the request completed with an error", async () => {
+  const submit = await fetchJson(`${BASE_URL}/v1/queue/${IMAGE_MODEL}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: "__force_bad_request response 422 test" }),
+  });
+  assert.equal(submit.status, 202);
+  const submitBody = submit.body as SubmitResponse;
+
+  const completed = await waitForCompletedStatus(submitBody.status_url);
+  assert.equal(completed.status, "COMPLETED");
+  assert.equal(completed.error_type, "bad_request");
+
+  // A request that failed surfaces as 422 (not 200) on the response endpoint.
+  const response = await fetchJson(submitBody.response_url);
+  assert.equal(response.status, 422);
+  assert.equal(response.body.error_type, "bad_request");
+  assert.ok(typeof response.body.error === "string");
 });
 
 test("X-Fal-No-Retry disables retryable retries", async () => {
