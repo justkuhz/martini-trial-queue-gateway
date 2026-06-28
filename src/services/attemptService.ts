@@ -12,10 +12,16 @@ import { createGatewayRequestId } from "../utils/ids";
  * from the request's own identity.
  */
 
+/**
+ * Opens a new attempt for a request: derives the next attempt_number, mints a
+ * fresh gateway_request_id, inserts the attempt row, and records it as the
+ * request's latest gateway id. Returns both for the worker to log and use.
+ */
 export async function startAttempt(params: {
   requestId: string;
   modelId: string;
 }): Promise<{ gatewayRequestId: string; attemptNumber: number }> {
+  // Next attempt number = highest existing for this request + 1 (starts at 1).
   const [latest] = await db
     .select({
       attemptNumber: requestAttempts.attemptNumber,

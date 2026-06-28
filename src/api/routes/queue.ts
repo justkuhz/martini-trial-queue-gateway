@@ -77,6 +77,8 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const requestId = createRequestId();
+
+      // Parse + validate the optional fal-like control headers; reject malformed values.
       const rawNoRetry = request.headers["x-fal-no-retry"];
       const noRetryHeader = Array.isArray(rawNoRetry) ? rawNoRetry[0] : rawNoRetry;
       const noRetry = noRetryHeader === "1";
@@ -134,6 +136,7 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
+      // Validate the optional completion webhook URL before doing any work.
       let webhookUrl: string | undefined;
       if (request.query.fal_webhook) {
         try {
@@ -146,6 +149,7 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         }
       }
 
+      // Validate the body against the model's input schema (shape is model-specific).
       const parsedInput = model.inputSchema.safeParse(request.body ?? {});
       if (!parsedInput.success) {
         return reply.code(400).send({
@@ -155,6 +159,7 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
+      // Persist before enqueuing so the worker always finds a row to act on.
       await createRequest({
         requestId,
         modelId,
@@ -235,6 +240,9 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
       let closed = false;
       let inFlight = false;
 
+      // Emit one status event per tick. The inFlight/closed guards prevent
+      // overlapping DB reads and stop the interval once the stream ends or the
+      // request reaches COMPLETED.
       const writeStatusEvent = async (): Promise<void> => {
         if (closed || inFlight) {
           return;
@@ -307,6 +315,7 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
+      // Map state to HTTP: not ready -> 409, completed-with-error -> 422, else 200.
       const publicStatus = toPublicStatus(row.internalStatus);
       if (publicStatus !== "COMPLETED") {
         return reply.code(409).send({
@@ -324,6 +333,7 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
+      // Defensive: persisted output should always satisfy the model's schema.
       const parsedOutput = model.outputSchema.safeParse(row.outputJson ?? {});
       if (!parsedOutput.success) {
         return reply.code(500).send({
@@ -359,6 +369,8 @@ export const queueRoutes: FastifyPluginAsync = async (app) => {
 
       await markCancellationRequested(row.requestId);
 
+      // If still queued, drop the job and finalize as cancelled. If already
+      // active, just record intent — the worker honors it cooperatively.
       const removedQueuedJob = await removeQueuedRequestJob(row.requestId);
       if (removedQueuedJob) {
         await markCompletedIfNotCompleted({

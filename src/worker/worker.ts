@@ -146,6 +146,7 @@ const worker = new Worker<QueueJobPayload>(
       `Worker started processing (attempt ${attemptNumber}, ${gatewayRequestId}).`,
     );
 
+    // Bound inference with the model's request timeout via an abort signal.
     const abortController = new AbortController();
     const timeoutHandle = setTimeout(() => {
       abortController.abort();
@@ -166,6 +167,7 @@ const worker = new Worker<QueueJobPayload>(
       clearTimeout(timeoutHandle);
       await appendLog(requestId, "Done.");
 
+      // Honor a cancellation that landed while the model was still running.
       const currentRow = await getRequest(requestId, modelId);
       if (currentRow?.cancellationRequested) {
         await finishAttempt({
@@ -220,6 +222,7 @@ const worker = new Worker<QueueJobPayload>(
         errorType: normalizedError.errorType,
       });
 
+      // Retry only retryable errors with attempts left; otherwise finalize below.
       const maxAttempts = job.opts.attempts ?? DEFAULT_RETRY_ATTEMPTS;
       const attemptsUsed = job.attemptsMade + 1;
       const hasRetryRemaining = normalizedError.retryable && attemptsUsed < maxAttempts;
